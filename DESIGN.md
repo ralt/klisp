@@ -401,6 +401,13 @@ in-kernel eval endpoint — do not expose it on the network); keep `rmmod` and
 the soft-reset trigger at hand. The same `klisp.ko` artifact runs in both
 places — only the build's target kernel headers differ.
 
+`make install` (run as root, after `make`) automates this: it installs
+`klisp.ko` to `/lib/modules/$(uname -r)/extra/`, runs `depmod`, autoloads it at
+boot via `/etc/modules-load.d/klisp.conf`, sets `options klisp
+bind_addr=127.0.0.1 …` in `/etc/modprobe.d/klisp.conf` (loopback by default),
+and loads it now. `make uninstall` reverses it. Secure Boot rejects the unsigned
+module unless it's signed with an enrolled MOK key (the target warns).
+
 ---
 
 ## 9. Milestones (each independently testable)

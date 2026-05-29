@@ -106,7 +106,8 @@ M-x slime-connect RET localhost RET 4005 RET
 
 # Or a raw REPL over netcat:
 nc localhost 4005     # then type: (+ 1 2)  or inspect the kernel:
-                      #   (car (list-processes))  =>  (:pid 1 :comm "init" ...)
+                      #   (car (list-processes))            =>  (:pid 1 :comm "init" ...)
+                      #   (getf (car (list-processes)) :pid)  =>  1     (pull a field)
                       #   (list-netdevs)  (meminfo)  (uname)  (= sq (fn (n) (* n n)))  (sq 9)
 ```
 
@@ -132,6 +133,49 @@ echo 1 > /sys/kernel/debug/klisp/reset    # supervisor restarts the worker
 
 A runaway evaluation (e.g. `(while 1 1)`) is aborted automatically after
 `eval_timeout_s` seconds rather than wedging the session.
+
+## Install on your host kernel
+
+> **Caution.** klisp is an in-kernel REPL — connecting is effectively
+> root-level code execution on the host. Install only on a machine you trust,
+> keep it bound to **loopback** (the default), and never expose the port on the
+> network. Develop in QEMU first (above); install only once you trust the build.
+
+Build as your user, then install as root. The module is compiled against — and
+installed for — your *running* kernel:
+
+```sh
+make                 # build klisp.ko for $(uname -r)  (as your user)
+sudo make install    # install, autoload at boot, and load now (loopback:4005)
+```
+
+`make install` copies `klisp.ko` to `/lib/modules/$(uname -r)/extra/`, runs
+`depmod`, and writes:
+
+- `/etc/modules-load.d/klisp.conf` → loads `klisp` **at every boot**
+  (systemd-modules-load),
+- `/etc/modprobe.d/klisp.conf` → module options
+  (`options klisp bind_addr=127.0.0.1 port=4005`).
+
+Override options at install time:
+
+```sh
+sudo make install MODOPTS='bind_addr=127.0.0.1 port=4005 eval_timeout_s=10'
+```
+
+Then connect from the same machine: `M-x slime-connect RET localhost RET 4005`,
+or `nc localhost 4005`. Remove everything (unload + delete + un-autoload) with:
+
+```sh
+sudo make uninstall
+```
+
+Notes:
+- **Secure Boot**: a locked-down kernel rejects unsigned modules; `make install`
+  warns if it detects Secure Boot. Either sign `klisp.ko` with an enrolled MOK
+  key or disable Secure Boot (`mokutil --sb-state`).
+- The module's `vermagic` must match the running kernel; rebuild (`make`) and
+  re-install after a kernel upgrade.
 
 ## Testing
 

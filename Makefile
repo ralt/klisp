@@ -18,7 +18,7 @@ KO_SRCS := src/klisp_main.c \
            vendor/fe/fe.c vendor/fe/fe.h vendor/fe/fe_port.h \
            Kbuild docker/Dockerfile scripts/build.sh
 
-.PHONY: all module image initramfs run play test clean
+.PHONY: all module image initramfs run play test clean install uninstall
 
 all: module
 module: klisp.ko
@@ -52,3 +52,39 @@ clean:
 	      src/klisp_main.o vendor/fe/fe.o \
 	      .*.cmd src/.*.cmd vendor/fe/.*.cmd
 	rm -rf .tmp_versions
+
+# --- host install (the REAL kernel) ----------------------------------------
+# Build first as your user (`make`), then install as root (`sudo make install`).
+# Installs klisp.ko for the running kernel, autoloads it at boot, and loads it
+# now. Defaults to loopback (bind_addr=127.0.0.1): the REPL is root-equivalent
+# code execution, so do NOT expose it on the network. Override with
+#   sudo make install MODOPTS='bind_addr=127.0.0.1 port=4005 eval_timeout_s=5'
+KREL    := $(shell uname -r)
+MODDIR  := /lib/modules/$(KREL)/extra
+MODOPTS ?= bind_addr=127.0.0.1 port=4005
+
+install:
+	@[ "$$(id -u)" = 0 ] || { echo "run as root: sudo make install"; exit 1; }
+	@[ -f klisp.ko ] || { echo "build it first (as your user): make"; exit 1; }
+	@if command -v mokutil >/dev/null 2>&1 && \
+	    mokutil --sb-state 2>/dev/null | grep -qi 'SecureBoot enabled'; then \
+		echo "WARNING: Secure Boot is enabled — this unsigned module will be"; \
+		echo "         rejected unless signed with an enrolled key (see README)."; \
+	fi
+	install -d "$(MODDIR)"
+	install -m 0644 klisp.ko "$(MODDIR)/klisp.ko"
+	depmod -a "$(KREL)"
+	install -d /etc/modules-load.d /etc/modprobe.d
+	printf 'klisp\n' > /etc/modules-load.d/klisp.conf
+	printf 'options klisp %s\n' '$(MODOPTS)' > /etc/modprobe.d/klisp.conf
+	modprobe klisp
+	@echo ">> installed; loaded with: $(MODOPTS)"
+	@echo ">> autoloads at boot (/etc/modules-load.d/klisp.conf)"
+	@echo ">> connect:  M-x slime-connect RET localhost RET 4005   or   nc localhost 4005"
+
+uninstall:
+	@[ "$$(id -u)" = 0 ] || { echo "run as root: sudo make uninstall"; exit 1; }
+	-modprobe -r klisp 2>/dev/null || rmmod klisp 2>/dev/null || true
+	rm -f "$(MODDIR)/klisp.ko" /etc/modules-load.d/klisp.conf /etc/modprobe.d/klisp.conf
+	depmod -a "$(KREL)"
+	@echo ">> uninstalled."
