@@ -37,7 +37,10 @@ void klisp_emergency_longjmp(void);
 /* Stack-exhaustion guard for the recursive evaluator: the kernel stack is tiny
  * (~16 KB), so deep/runaway recursion must raise a Lisp error before it
  * overflows the C stack and oopses. */
-#define KLISP_STACK_MARGIN 2048
+/* Trip with enough stack left to unwind and report the error. The error path
+ * must NOT do heavy work (e.g. socket I/O) before longjmp'ing to the top
+ * level — see repl_onerror. */
+#define KLISP_STACK_MARGIN 4096
 static inline int klisp_stack_low(void)
 {
 	char probe;

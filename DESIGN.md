@@ -420,6 +420,18 @@ places — only the build's target kernel headers differ.
    - Gotcha found & fixed: kbuild's `M=$(PWD) clean` runs `find -name '*.ko*'
      -delete` over the tree, wiping fetched artifacts under `.devkernel/` → our
      Makefile uses a targeted `clean` instead.
+   - Gotcha found & fixed (by the test harness): reporting an error from deep
+     in the evaluator's recursion sent it over TCP while still deep; the network
+     TX path needs several KB of stack and overflowed the guard page (panic).
+     Fix: `repl_onerror` stashes the message and `longjmp`s to the top level,
+     which reports it once the stack has unwound. Margin bumped to 4 KB.
+
+   **Regression tests:** `scripts/test.sh` builds (Docker), boots QEMU, and runs
+   `scripts/repl_test.py` — 39 assertions over the primitives (arithmetic,
+   predicates, control flow, data, functions/recursion, and error recovery),
+   plus a check that the kernel didn't Oops/panic underneath. This caught the
+   stack-overflow bug above, which manual testing had missed (it only triggers
+   when an interrupt lands during the deep send). Run before adding abstractions.
 3. **M3 — Minimal SWANK REPL.** The ~7 REPL handlers + framing → real
    `M-x slime-connect` working REPL.
 4. **M4 — Read-only kernel objects.** `(list-processes)`, `(list-modules)`,

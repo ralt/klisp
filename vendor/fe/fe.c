@@ -157,7 +157,7 @@ begin:
   switch (type(obj)) {
     case FE_TPAIR:
       fe_mark(ctx, car);
-      /* fall through */
+      fallthrough; /* klisp: kernel macro so -Wimplicit-fallthrough is quiet */
     case FE_TFUNC: case FE_TMACRO: case FE_TSYMBOL: case FE_TSTRING:
       obj = cdr(obj);
       goto begin;

@@ -90,6 +90,20 @@ automated rmmod/reload self-test.
 Once the SWANK server lands (M3), connecting will be
 `M-x slime-connect RET localhost RET 4005 RET`.
 
+## Testing
+
+`scripts/test.sh` is the end-to-end regression suite: it builds the module in
+Docker, boots it in QEMU, drives the REPL over TCP, and asserts the results of
+~40 expressions (arithmetic, predicates, control flow, lists, functions and
+recursion, and error recovery), failing if any case is wrong or the kernel
+Oopses. Run it before adding new primitives or abstractions:
+
+```sh
+scripts/test.sh          # prints per-case ok/FAIL, then PASS/FAIL; exit code reflects it
+```
+
+The cases live in `scripts/repl_test.py`; add to `CASES` as the language grows.
+
 ## Module parameters
 
 | param | default | notes |

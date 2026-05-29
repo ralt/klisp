@@ -25,6 +25,7 @@
 #include <linux/net.h>
 #include <linux/socket.h>
 #include <linux/uio.h>
+#include <linux/objtool.h>
 #include <net/sock.h>
 
 #include "fe.h"
@@ -55,6 +56,7 @@ struct repl_io {
 	bool eof;
 	char wbuf[1024];
 	int wlen;
+	char errmsg[160];	/* pending error, reported at the REPL top level */
 };
 
 static struct repl_io *g_io;
@@ -144,6 +146,9 @@ void klisp_emergency_longjmp(void)
 		__builtin_longjmp(g_io->errjmp, 1);
 	pr_err("fe error with no active REPL context\n");
 }
+/* __builtin_longjmp is a non-local jump objtool can't model (it sees a sibling
+ * call with a modified stack frame). The jump is intentional; exempt it. */
+STACK_FRAME_NON_STANDARD(klisp_emergency_longjmp);
 
 /* Integer strtod replacement (base 10, optional sign). On no digits, *end == s
  * so fe treats the token as a symbol (e.g. the primitives +, -, *, /). */
@@ -170,19 +175,21 @@ long klisp_strtod(const char *s, char **end)
 	return neg ? -v : v;
 }
 
-/* fe error handler: report to the client and unwind to the REPL top level. */
+/* fe error handler. Stash the message and unwind to the REPL top level; do NOT
+ * touch the socket here. fe_error can fire deep in the evaluator's recursion
+ * (e.g. the stack-depth guard), and the network TX path needs several KB of
+ * stack — sending from here risks overflowing the kernel stack. The top-level
+ * setjmp handler reports the message once the stack has unwound. */
 static void repl_onerror(fe_Context *ctx, const char *msg, fe_Object *cl)
 {
 	(void)ctx;
 	(void)cl;
 	if (g_io) {
-		repl_puts(g_io, "error: ");
-		repl_puts(g_io, msg);
-		repl_putc(g_io, '\n');
-		repl_flush(g_io);
+		strscpy(g_io->errmsg, msg, sizeof(g_io->errmsg));
 		__builtin_longjmp(g_io->errjmp, 1);
 	}
 }
+STACK_FRAME_NON_STANDARD(repl_onerror); /* see klisp_emergency_longjmp */
 
 /* ---- the REPL ---------------------------------------------------------- */
 
@@ -213,8 +220,15 @@ static void klisp_repl_conn(struct socket *sock)
 
 	gc = fe_savegc(ctx);
 	if (__builtin_setjmp(io->errjmp)) {
-		/* arrived here after an error; reset and re-prompt */
+		/* arrived here after an error; report it now that the stack has
+		 * unwound (safe to do socket I/O), then re-prompt */
 		fe_restoregc(ctx, gc);
+		if (io->errmsg[0]) {
+			repl_puts(io, "error: ");
+			repl_puts(io, io->errmsg);
+			repl_putc(io, '\n');
+			io->errmsg[0] = '\0';
+		}
 		repl_puts(io, "> ");
 		repl_flush(io);
 	}
@@ -239,6 +253,8 @@ static void klisp_repl_conn(struct socket *sock)
 	vfree(heap);
 	kfree(io);
 }
+/* Contains __builtin_setjmp (the longjmp target); objtool can't model it. */
+STACK_FRAME_NON_STANDARD(klisp_repl_conn);
 
 /* ---- listener ---------------------------------------------------------- */
 
