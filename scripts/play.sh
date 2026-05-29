@@ -9,9 +9,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # PORT into mk-initramfs would change the guest port and break the forward.)
 HOSTPORT="${PORT:-4005}"
 
-[ -f "${ROOT}/klisp.ko" ]          || bash "${ROOT}/scripts/build.sh"
-[ -f "${ROOT}/.devkernel/vmlinuz" ] || bash "${ROOT}/scripts/fetch-image.sh"
-PORT=4005 bash "${ROOT}/scripts/mk-initramfs.sh" >/dev/null  # guest on 4005
+# Build the module + initramfs as needed via make's dependency tracking
+# (rebuilds only what changed; never boots a stale artifact).
+make -C "${ROOT}" "${ROOT}/.devkernel/initramfs.gz" "${ROOT}/.devkernel/vmlinuz"
 
 ACCEL=()
 [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)

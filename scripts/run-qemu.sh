@@ -8,8 +8,9 @@ OUT="${ROOT}/.devkernel"
 # Host port to connect to; guest module listens on 4005 (forwarded below).
 HOSTPORT="${PORT:-4005}"
 
-[ -f "$OUT/vmlinuz" ]       || { echo "run scripts/fetch-image.sh first"; exit 1; }
-[ -f "$OUT/initramfs.gz" ]  || { echo "run scripts/mk-initramfs.sh first"; exit 1; }
+# Ensure the module + initramfs + kernel image are up to date (make handles the
+# dependency order; never boots a stale artifact).
+make -C "$ROOT" "$OUT/initramfs.gz" "$OUT/vmlinuz"
 
 ACCEL=()
 if [ -w /dev/kvm ]; then

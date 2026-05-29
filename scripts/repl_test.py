@@ -73,6 +73,10 @@ CASES = [
     ("(meminfo)", "totalram"),
     ("(uname)", "6.12"),
     ("(uname)", "Linux"),
+    # list helpers
+    ("(length (list 1 2 3))", "3"),
+    ("(nth 1 (list 10 20 30))", "20"),
+    ("(< 0 (length (list-processes)))", "t"),    # at least one process
     # discovery
     ("(atom (functions))", "nil"),               # functions returns a list
     ("(functions)", "car"),                      # a primitive

@@ -423,6 +423,29 @@ static fe_Object *cf_functions(fe_Context *ctx, fe_Object *args)
 	return res;
 }
 
+/* List helpers fe lacks. Iterative (no recursion), so big lists are safe. */
+static fe_Object *cf_length(fe_Context *ctx, fe_Object *args)
+{
+	fe_Object *l = fe_nextarg(ctx, &args);
+	long n = 0;
+
+	while (fe_type(ctx, l) == FE_TPAIR) {
+		n++;
+		l = fe_cdr(ctx, l);
+	}
+	return fe_number(ctx, n);
+}
+
+static fe_Object *cf_nth(fe_Context *ctx, fe_Object *args)
+{
+	long n = (long)fe_tonumber(ctx, fe_nextarg(ctx, &args));
+	fe_Object *l = fe_nextarg(ctx, &args);
+
+	while (n-- > 0 && fe_type(ctx, l) == FE_TPAIR)
+		l = fe_cdr(ctx, l);
+	return fe_car(ctx, l);
+}
+
 static void klisp_register_kernel_builtins(fe_Context *ctx)
 {
 	int gc = fe_savegc(ctx);
@@ -433,6 +456,8 @@ static void klisp_register_kernel_builtins(fe_Context *ctx)
 		{ "uname",          cf_uname },
 		{ "env",            cf_env },
 		{ "functions",      cf_functions },
+		{ "length",         cf_length },
+		{ "nth",            cf_nth },
 	};
 	int i;
 

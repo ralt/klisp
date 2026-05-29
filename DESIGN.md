@@ -332,7 +332,9 @@ Repo layout (✓ = exists as of M1):
 ```
 klisp/
   DESIGN.md
-  Makefile                  # ✓ out-of-tree build (klisp-y := src/klisp_main.o; += vendor/fe/fe.o later)
+  Kbuild                    # ✓ module description (obj-m, sources, ccflags)
+  Makefile                  # ✓ dev orchestration: make / run / play / test / clean,
+                            #   with dependency tracking so a stale .ko/initramfs never boots
   src/klisp_main.c          # ✓ M1: socket/kthread; later: swank, snapshots, glue
   docker/Dockerfile         # ✓ debian:trixie + matching linux-headers (build env)
   scripts/                  # ✓ build.sh, fetch-image.sh, mk-initramfs.sh, run-qemu.sh

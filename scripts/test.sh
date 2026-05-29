@@ -10,20 +10,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${TEST_PORT:-4099}"
 SERIAL="${ROOT}/.devkernel/serial-test.log"
 
-echo ">> [1/4] build module (docker)"
-bash "${ROOT}/scripts/build.sh" >/dev/null
-
-echo ">> [2/4] fetch kernel deps (cached after first run)"
-bash "${ROOT}/scripts/fetch-image.sh" >/dev/null
-
-echo ">> [3/4] build initramfs"
-bash "${ROOT}/scripts/mk-initramfs.sh" >/dev/null
+# Bring the module + initramfs + kernel image up to date via make's dependency
+# tracking (rebuilds only what changed; never boots a stale artifact).
+echo ">> building (make: module + initramfs as needed)"
+make -C "${ROOT}" "${ROOT}/.devkernel/initramfs.gz" "${ROOT}/.devkernel/vmlinuz"
 
 ACCEL=()
 [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)
 
 rm -f "${SERIAL}"
-echo ">> [4/4] boot QEMU (host port ${PORT}) and run REPL tests"
+echo ">> boot QEMU (host port ${PORT}) and run tests"
 qemu-system-x86_64 "${ACCEL[@]}" \
 	-kernel "${ROOT}/.devkernel/vmlinuz" \
 	-initrd "${ROOT}/.devkernel/initramfs.gz" \

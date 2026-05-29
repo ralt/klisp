@@ -78,19 +78,22 @@ Prerequisites: Docker (you can run `docker`), `qemu-system-x86_64`, a Debian/
 read/write on `/dev/kvm` for speed.
 
 ```sh
-scripts/play.sh           # build (if needed), boot the VM, and print how to connect
+make play          # build what's needed, boot the VM, print how to connect
 ```
 
-`play.sh` is the easy path — it ensures everything is built, boots klisp in
-QEMU, and prints the address to connect to (`localhost:4005`). Set `PORT=NNNN`
-to use a different host port. The individual steps are also available:
+`make` drives everything with dependency tracking, so it rebuilds only what
+changed (module, then initramfs) and never boots a stale artifact:
 
 ```sh
-scripts/build.sh          # build klisp.ko in a container matching your kernel
-scripts/fetch-image.sh    # one-time: fetch a bootable vmlinuz + NIC + busybox (~108MB)
-scripts/mk-initramfs.sh   # build the initramfs that loads the module
-scripts/run-qemu.sh       # boot it (quit QEMU with Ctrl-A then X)
+make               # build klisp.ko (only if sources changed)
+make run           # build as needed, then boot in QEMU (Ctrl-A X to quit)
+make play          # same as run, but prints the connect address (PORT=NNNN to change)
+make test          # build as needed, boot, and run the test suite
+make clean
 ```
+
+(The underlying steps live in `scripts/` — `build.sh`, `fetch-image.sh`,
+`mk-initramfs.sh`, `run-qemu.sh` — and the module itself is described in `Kbuild`.)
 
 Then connect, either way (same port; the protocol is auto-detected):
 
@@ -134,7 +137,7 @@ failing if any case is wrong or the kernel Oopses:
 Run it before adding new primitives or abstractions:
 
 ```sh
-scripts/test.sh          # per-case ok/FAIL, then PASS/FAIL; exit code reflects it
+make test          # builds as needed, then per-case ok/FAIL, then PASS/FAIL
 ```
 
 The cases live in `scripts/repl_test.py`; add to `CASES` as the language grows.
