@@ -65,6 +65,14 @@ CASES = [
     ("(= loop (fn () (loop)))", "nil"),
     ("(loop)", "recursion too deep"),
     ("(+ 2 2)", "4"),
+    # read-only kernel objects (values are live, so assert structure)
+    ("(atom (list-processes))", "nil"),          # non-empty list, not an atom
+    ("(car (list-processes))", ":pid"),          # first proc is a plist
+    ("(car (list-processes))", ":comm"),
+    ("(list-netdevs)", "lo"),                    # loopback always present
+    ("(meminfo)", "totalram"),
+    ("(uname)", "6.12"),
+    ("(uname)", "Linux"),
 ]
 
 

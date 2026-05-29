@@ -26,12 +26,18 @@
 #include <linux/vmalloc.h>
 #include <linux/string.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>		/* for_each_process */
+#include <linux/mm.h>			/* si_meminfo */
+#include <linux/sysinfo.h>
+#include <linux/utsname.h>
+#include <linux/netdevice.h>		/* for_each_netdev_rcu */
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/net.h>
 #include <linux/socket.h>
 #include <linux/uio.h>
 #include <linux/objtool.h>
+#include <net/net_namespace.h>		/* init_net */
 #include <net/sock.h>
 
 #include "fe.h"
@@ -78,6 +84,7 @@ struct repl_io {
 	char capbuf[CAPSZ];		/* captured (print ...) output */
 	int caplen;
 	bool capturing;
+	void *kobj_scratch;		/* kmalloc'd snapshot, freed on error unwind */
 };
 
 static struct repl_io *g_io;
@@ -217,6 +224,182 @@ static void repl_onerror(fe_Context *ctx, const char *msg, fe_Object *cl)
 }
 STACK_FRAME_NON_STANDARD(repl_onerror);
 
+/* ---- read-only kernel objects (DESIGN.md §6) --------------------------- *
+ * Each builtin snapshots live kernel state under the right lock into a plain C
+ * array, releases the lock, then builds immutable Lisp plists from the copy.
+ * Lisp never sees a raw kernel pointer, so a REPL bug cannot corrupt or
+ * use-after-free kernel state. The kmalloc'd snapshot is parked in
+ * g_io->kobj_scratch so the error-unwind path frees it if fe_error fires while
+ * building the result.
+ */
+
+#define KOBJ_MAX	1024
+
+static const char *task_state_str(unsigned int s)
+{
+	if (s == TASK_RUNNING)			return "R";
+	if (s & TASK_UNINTERRUPTIBLE)		return "D";
+	if (s & TASK_INTERRUPTIBLE)		return "S";
+	if (s & __TASK_STOPPED)			return "T";
+	if (s & TASK_DEAD)			return "X";
+	return "?";
+}
+
+/* Build (key val key val ...) from interleaved fe objects. */
+static fe_Object *plist(fe_Context *ctx, fe_Object **kv, int n)
+{
+	return fe_list(ctx, kv, n);
+}
+
+struct psnap { pid_t pid, ppid; unsigned int state; char comm[TASK_COMM_LEN]; };
+
+static fe_Object *cf_list_processes(fe_Context *ctx, fe_Object *args)
+{
+	struct psnap *arr;
+	struct task_struct *p;
+	fe_Object *res;
+	int n = 0, i, gc;
+
+	(void)args;
+	arr = kmalloc_array(KOBJ_MAX, sizeof(*arr), GFP_KERNEL);
+	if (!arr)
+		fe_error(ctx, "out of memory");
+	g_io->kobj_scratch = arr;
+
+	rcu_read_lock();
+	for_each_process(p) {
+		if (n >= KOBJ_MAX)
+			break;
+		arr[n].pid = task_pid_nr(p);
+		arr[n].ppid = task_ppid_nr(p);
+		arr[n].state = READ_ONCE(p->__state);
+		memcpy(arr[n].comm, p->comm, TASK_COMM_LEN);
+		arr[n].comm[TASK_COMM_LEN - 1] = '\0';
+		n++;
+	}
+	rcu_read_unlock();
+
+	res = fe_bool(ctx, 0);			/* nil */
+	gc = fe_savegc(ctx);
+	for (i = n - 1; i >= 0; i--) {
+		fe_Object *kv[8];
+
+		fe_restoregc(ctx, gc);
+		fe_pushgc(ctx, res);
+		kv[0] = fe_symbol(ctx, ":pid");   kv[1] = fe_number(ctx, arr[i].pid);
+		kv[2] = fe_symbol(ctx, ":comm");  kv[3] = fe_string(ctx, arr[i].comm);
+		kv[4] = fe_symbol(ctx, ":ppid");  kv[5] = fe_number(ctx, arr[i].ppid);
+		kv[6] = fe_symbol(ctx, ":state");
+		kv[7] = fe_string(ctx, task_state_str(arr[i].state));
+		res = fe_cons(ctx, plist(ctx, kv, 8), res);
+	}
+
+	g_io->kobj_scratch = NULL;
+	kfree(arr);
+	return res;
+}
+
+struct nsnap { char name[IFNAMSIZ]; int ifindex; unsigned int mtu, flags; };
+
+static fe_Object *cf_list_netdevs(fe_Context *ctx, fe_Object *args)
+{
+	struct nsnap *arr;
+	struct net_device *dev;
+	fe_Object *res;
+	int n = 0, i, gc;
+
+	(void)args;
+	arr = kmalloc_array(KOBJ_MAX, sizeof(*arr), GFP_KERNEL);
+	if (!arr)
+		fe_error(ctx, "out of memory");
+	g_io->kobj_scratch = arr;
+
+	rcu_read_lock();
+	for_each_netdev_rcu(&init_net, dev) {
+		if (n >= KOBJ_MAX)
+			break;
+		memcpy(arr[n].name, dev->name, IFNAMSIZ);
+		arr[n].name[IFNAMSIZ - 1] = '\0';
+		arr[n].ifindex = dev->ifindex;
+		arr[n].mtu = dev->mtu;
+		arr[n].flags = dev->flags;
+		n++;
+	}
+	rcu_read_unlock();
+
+	res = fe_bool(ctx, 0);
+	gc = fe_savegc(ctx);
+	for (i = n - 1; i >= 0; i--) {
+		fe_Object *kv[10];
+
+		fe_restoregc(ctx, gc);
+		fe_pushgc(ctx, res);
+		kv[0] = fe_symbol(ctx, ":name");  kv[1] = fe_string(ctx, arr[i].name);
+		kv[2] = fe_symbol(ctx, ":index"); kv[3] = fe_number(ctx, arr[i].ifindex);
+		kv[4] = fe_symbol(ctx, ":mtu");   kv[5] = fe_number(ctx, arr[i].mtu);
+		kv[6] = fe_symbol(ctx, ":up");
+		kv[7] = fe_bool(ctx, arr[i].flags & IFF_UP);
+		kv[8] = fe_symbol(ctx, ":flags"); kv[9] = fe_number(ctx, arr[i].flags);
+		res = fe_cons(ctx, plist(ctx, kv, 10), res);
+	}
+
+	g_io->kobj_scratch = NULL;
+	kfree(arr);
+	return res;
+}
+
+static fe_Object *cf_meminfo(fe_Context *ctx, fe_Object *args)
+{
+	struct sysinfo si = {};
+	fe_Object *kv[8];
+	unsigned long unit;
+
+	(void)args;
+	si_meminfo(&si);
+	unit = si.mem_unit ? si.mem_unit : 1;
+	/* report in KiB */
+	kv[0] = fe_symbol(ctx, ":totalram-kb");
+	kv[1] = fe_number(ctx, (long)((si.totalram * unit) >> 10));
+	kv[2] = fe_symbol(ctx, ":freeram-kb");
+	kv[3] = fe_number(ctx, (long)((si.freeram * unit) >> 10));
+	kv[4] = fe_symbol(ctx, ":bufferram-kb");
+	kv[5] = fe_number(ctx, (long)((si.bufferram * unit) >> 10));
+	kv[6] = fe_symbol(ctx, ":sharedram-kb");
+	kv[7] = fe_number(ctx, (long)((si.sharedram * unit) >> 10));
+	return plist(ctx, kv, 8);
+}
+
+static fe_Object *cf_uname(fe_Context *ctx, fe_Object *args)
+{
+	struct new_utsname *u = utsname();
+	fe_Object *kv[8];
+
+	(void)args;
+	kv[0] = fe_symbol(ctx, ":sysname"); kv[1] = fe_string(ctx, u->sysname);
+	kv[2] = fe_symbol(ctx, ":release"); kv[3] = fe_string(ctx, u->release);
+	kv[4] = fe_symbol(ctx, ":version"); kv[5] = fe_string(ctx, u->version);
+	kv[6] = fe_symbol(ctx, ":machine"); kv[7] = fe_string(ctx, u->machine);
+	return plist(ctx, kv, 8);
+}
+
+static void klisp_register_kernel_builtins(fe_Context *ctx)
+{
+	int gc = fe_savegc(ctx);
+	struct { const char *name; fe_CFunc fn; } tbl[] = {
+		{ "list-processes", cf_list_processes },
+		{ "list-netdevs",   cf_list_netdevs },
+		{ "meminfo",        cf_meminfo },
+		{ "uname",          cf_uname },
+	};
+	int i;
+
+	for (i = 0; i < (int)ARRAY_SIZE(tbl); i++) {
+		fe_set(ctx, fe_symbol(ctx, tbl[i].name),
+		       fe_cfunc(ctx, tbl[i].fn));
+		fe_restoregc(ctx, gc);
+	}
+}
+
 /* ---- shared eval ------------------------------------------------------- */
 
 struct strrd { const char *s; int pos, len; };
@@ -257,6 +440,10 @@ static void klisp_raw_repl(struct repl_io *io, fe_Context *ctx)
 	gc = fe_savegc(ctx);
 	if (__builtin_setjmp(io->errjmp)) {
 		fe_restoregc(ctx, gc);
+		if (io->kobj_scratch) {		/* freed here if error hit mid-build */
+			kfree(io->kobj_scratch);
+			io->kobj_scratch = NULL;
+		}
 		if (io->errmsg[0]) {
 			repl_puts(io, "error: ");
 			repl_puts(io, io->errmsg);
@@ -574,6 +761,10 @@ static void klisp_swank_serve(struct repl_io *io, fe_Context *ctx)
 		if (__builtin_setjmp(io->errjmp)) {
 			fe_restoregc(ctx, gc);
 			io->capturing = false;
+			if (io->kobj_scratch) {
+				kfree(io->kobj_scratch);
+				io->kobj_scratch = NULL;
+			}
 			if (io->cur_id >= 0)
 				swank_abort(io, io->cur_id,
 					    io->errmsg[0] ? io->errmsg : "error");
@@ -611,6 +802,7 @@ static void klisp_conn(struct socket *sock)
 	io->sock = sock;
 	ctx = fe_open(heap, KLISP_FE_HEAP);
 	fe_handlers(ctx)->error = repl_onerror;
+	klisp_register_kernel_builtins(ctx);
 	g_io = io;
 
 	/* Protocol detection: SLIME sends a length-prefixed message immediately,
@@ -643,6 +835,8 @@ static void klisp_conn(struct socket *sock)
 
 out:
 	g_io = NULL;
+	if (io->kobj_scratch)
+		kfree(io->kobj_scratch);
 	fe_close(ctx);
 	vfree(heap);
 	kfree(io);

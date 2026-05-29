@@ -62,8 +62,11 @@ Early. Built in milestones:
 - **M2 — done.** Embedded `fe` Lisp interpreter as a raw line REPL.
 - **M3 — done.** Minimal SWANK server so Emacs/SLIME can connect; same port
   also serves the raw REPL (protocol auto-detected).
-- **Upcoming.** Read-only kernel objects (`list-processes`, …) and the SLIME
-  inspector. See `DESIGN.md` §9 for the roadmap.
+- **M4 — done.** Read-only kernel objects as Lisp data: `(list-processes)`,
+  `(list-netdevs)`, `(meminfo)`, `(uname)` — snapshotted under lock into
+  immutable plists.
+- **Upcoming.** More kernel objects and the SLIME inspector for click-through
+  navigation. See `DESIGN.md` §9 for the roadmap.
 
 ## Quickstart (build → boot → connect)
 
@@ -93,7 +96,9 @@ Then connect, either way (same port; the protocol is auto-detected):
 M-x slime-connect RET localhost RET 4005 RET
 
 # Or a raw REPL over netcat:
-nc localhost 4005     # then type: (+ 1 2)  (= sq (fn (n) (* n n)))  (sq 9)
+nc localhost 4005     # then type: (+ 1 2)  or inspect the kernel:
+                      #   (car (list-processes))  =>  (:pid 1 :comm "init" ...)
+                      #   (list-netdevs)  (meminfo)  (uname)  (= sq (fn (n) (* n n)))  (sq 9)
 ```
 
 Inside the VM you can `rmmod klisp` / `insmod /klisp.ko bind_addr=0.0.0.0` to

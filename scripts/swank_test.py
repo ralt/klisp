@@ -46,6 +46,10 @@ CASES = [
     ("(= loop (fn () (loop)))", "nil", "ok"),
     ("(loop)", "recursion too deep", "abort"),
     ("(+ 2 2)", "4", "ok"),
+    # read-only kernel objects (live values, assert structure)
+    ("(car (list-processes))", ":pid", "ok"),
+    ("(list-netdevs)", "lo", "ok"),
+    ("(uname)", "6.12", "ok"),
 ]
 
 

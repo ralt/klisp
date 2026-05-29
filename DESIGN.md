@@ -447,8 +447,19 @@ places — only the build's target kernel headers differ.
    commence!"), evaluates, and recovers from errors.
    - To play interactively: `scripts/play.sh` boots the VM and prints the
      address (`localhost:4005`) to `slime-connect`/`nc` to.
-4. **M4 — Read-only kernel objects.** `(list-processes)`, `(list-modules)`,
-   `(list-netdevs)` returning snapshot plists; printer shows `#<proc ...>`.
+4. **M4 — Read-only kernel objects. ✓ DONE.** `(list-processes)`,
+   `(list-netdevs)`, `(meminfo)`, `(uname)` registered as `fe` C-functions per
+   connection. Each snapshots live state under `rcu_read_lock` into a kmalloc'd
+   array, releases the lock, then builds **immutable Lisp plists** from the copy
+   — Lisp never sees a raw kernel pointer (DESIGN §6). The snapshot buffer is
+   parked in `io->kobj_scratch` so the error-unwind path frees it if `fe_error`
+   fires mid-build. *Verified in QEMU* (values are live, so tests assert
+   structure): e.g. `(car (list-processes))` → `(:pid 1 :comm "init" :ppid 0
+   :state "S")`, `(list-netdevs)` includes `lo`.
+   - Deferred: `(list-modules)` — safely iterating the module list needs
+     `module_mutex`/`modules`, neither EXPORT_SYMBOL'd; walking it unlocked
+     risks use-after-free against a concurrent `rmmod`. Revisit if a safe
+     accessor is found.
 5. **M5 — Inspector.** Inspector handlers + per-type `inspect` parts +
    re-snapshot-on-drill-in → click-through object navigation in SLIME.
 6. **M6 — Resilience hardening.** Soft-reset command, worker-restart
