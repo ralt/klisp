@@ -429,6 +429,34 @@ static void swank_create_repl(struct repl_io *io, long id)
 	swank_emit(io, io->msgbuf);
 }
 
+/* Send (:return (:ok VAL) id) for a fixed VAL literal. */
+static void swank_return_ok(struct repl_io *io, long id, const char *val)
+{
+	int p = 0;
+	char t[24];
+
+	bputs(io->msgbuf, MSGSZ, &p, "(:return (:ok ");
+	bputs(io->msgbuf, MSGSZ, &p, val);
+	snprintf(t, sizeof(t), ") %ld)", id);
+	bputs(io->msgbuf, MSGSZ, &p, t);
+	io->msgbuf[p] = '\0';
+	swank_emit(io, io->msgbuf);
+}
+
+/* autodoc (eldoc-on-type): SLIME destructures the result as (doc &optional
+ * cache-p), so it must be a non-empty list — returning nil makes SLIME's
+ * process filter error and breaks typing. We have no docs, so :not-available. */
+static void swank_autodoc(struct repl_io *io, long id)
+{
+	swank_return_ok(io, id, "(:not-available)");
+}
+
+/* completions (TAB): SLIME destructures as (completions partial). */
+static void swank_completions(struct repl_io *io, long id)
+{
+	swank_return_ok(io, id, "(nil \"\")");
+}
+
 /* listener-eval: evaluate the user string, stream any (print ...) output, then
  * the printed result as a :repl-result, then close the rex with :ok. */
 static void swank_listener_eval(struct repl_io *io, fe_Context *ctx,
@@ -528,8 +556,12 @@ static void swank_handle_rex(struct repl_io *io, fe_Context *ctx)
 		swank_listener_eval(io, ctx, form, id);
 	else if (strstr(opname, "interactive-eval"))
 		swank_interactive_eval(io, ctx, form, id);
+	else if (strstr(opname, "autodoc"))
+		swank_autodoc(io, id);
+	else if (strstr(opname, "completions"))
+		swank_completions(io, id);
 	else
-		swank_return_ok_nil(io, id);		/* require/autodoc/arglist/... */
+		swank_return_ok_nil(io, id);		/* require/arglist/... */
 }
 
 static void klisp_swank_serve(struct repl_io *io, fe_Context *ctx)

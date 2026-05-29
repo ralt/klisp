@@ -141,6 +141,15 @@ def main():
     ret, _, _ = run_rex(s, "(swank-repl:create-repl nil)", 2)
     check("create-repl", ":ok" in ret and "klisp-user" in ret, repr(ret[:60]))
 
+    # autodoc fires on every keystroke; SLIME destructures it as (doc cache-p),
+    # so an :ok nil here breaks typing. It must be a non-empty list.
+    ret, _, _ = run_rex(s, '(swank:autodoc (quote ("+")) :print-right-margin 80)', 3)
+    check("autodoc shape", ":ok" in ret and "nil)" not in ret and
+          ("not-available" in ret or '"' in ret), repr(ret))
+
+    ret, _, _ = run_rex(s, '(swank:simple-completions "ca" "klisp-user")', 4)
+    check("completions shape", ":ok (" in ret, repr(ret))
+
     # --- eval cases ---
     rid = 10
     for code, expect, kind in CASES:

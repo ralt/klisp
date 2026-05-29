@@ -38,7 +38,7 @@ trap cleanup EXIT
 
 # Wait for the REPL to come up, or bail on a boot-time fault.
 for _ in $(seq 1 120); do
-	grep -q "listening on .*Lisp REPL" "${SERIAL}" 2>/dev/null && break
+	grep -q "klisp: listening on" "${SERIAL}" 2>/dev/null && break
 	if grep -qE "Oops|kernel BUG|Kernel panic|Call Trace" "${SERIAL}" 2>/dev/null; then
 		echo "!! kernel fault during boot:"; sed -n '1,$p' "${SERIAL}" | tail -40
 		exit 1

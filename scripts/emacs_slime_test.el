@@ -14,8 +14,10 @@
   (add-to-list 'load-path d))
 (require 'slime)
 (setq slime-protocol-version 'ignore)   ; tolerate version differences
-(setq slime-contribs nil)               ; base SLIME only (no slime-fancy/macrostep)
+(setq slime-contribs nil)               ; avoid slime-fancy (needs macrostep)
 (slime-setup)
+(require 'slime-repl)                    ; REPL contrib (create-repl handshake)
+(require 'slime-autodoc)                 ; eldoc-on-type path (broke real typing)
 
 (defvar klisp-port (string-to-number (or (getenv "KLISP_PORT") "4005")))
 (defvar klisp-connected nil)
@@ -59,6 +61,14 @@
 (let ((got (klisp-eval "(fact 5)")))
   (klisp-check (and (stringp got) (string-match-p "120" got))
                "(fact 5)" (format "=> %S" got)))
+
+;; autodoc fires on every keystroke in a real session; SLIME destructures the
+;; result as (doc &optional cache-p), so a nil result errors its process filter
+;; and breaks typing. Ensure it comes back as a proper list.
+(let ((ad (condition-case e
+              (slime-eval '(swank:autodoc (quote ("+")) :print-right-margin 80))
+            (error (format "<error %S>" e)))))
+  (klisp-check (consp ad) "autodoc returns a list" (format "=> %S" ad)))
 
 ;; error recovery: a bad form aborts (SLIME signals), the next form still works
 (let ((aborted nil))
