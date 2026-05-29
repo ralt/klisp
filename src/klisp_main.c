@@ -49,7 +49,7 @@
 
 #define RBUFSZ		512
 #define WBUFSZ		1024
-#define MSGSZ		4096		/* max SWANK message / response payload */
+#define MSGSZ		8192		/* max SWANK message / response payload */
 #define SCRATCHSZ	1024		/* eval input / printed result */
 #define CAPSZ		1024		/* captured (print ...) output */
 
@@ -382,6 +382,45 @@ static fe_Object *cf_uname(fe_Context *ctx, fe_Object *args)
 	return plist(ctx, kv, 8);
 }
 
+/* (env): every interned symbol; (functions): just the callable ones. */
+static fe_Object *cf_env(fe_Context *ctx, fe_Object *args)
+{
+	fe_Object *res = fe_bool(ctx, 0), *s;
+	int gc = fe_savegc(ctx);
+
+	(void)args;
+	for (s = fe_symbols(ctx); !fe_isnil(ctx, s); s = fe_cdr(ctx, s)) {
+		fe_restoregc(ctx, gc);
+		fe_pushgc(ctx, res);
+		res = fe_cons(ctx, fe_car(ctx, s), res);
+	}
+	return res;
+}
+
+static int sym_is_callable(fe_Context *ctx, fe_Object *sym)
+{
+	int t = fe_type(ctx, fe_eval(ctx, sym));
+
+	return t == FE_TPRIM || t == FE_TCFUNC ||
+	       t == FE_TFUNC || t == FE_TMACRO;
+}
+
+static fe_Object *cf_functions(fe_Context *ctx, fe_Object *args)
+{
+	fe_Object *res = fe_bool(ctx, 0), *s, *sym;
+	int gc = fe_savegc(ctx);
+
+	(void)args;
+	for (s = fe_symbols(ctx); !fe_isnil(ctx, s); s = fe_cdr(ctx, s)) {
+		fe_restoregc(ctx, gc);
+		fe_pushgc(ctx, res);
+		sym = fe_car(ctx, s);
+		if (sym_is_callable(ctx, sym))
+			res = fe_cons(ctx, sym, res);
+	}
+	return res;
+}
+
 static void klisp_register_kernel_builtins(fe_Context *ctx)
 {
 	int gc = fe_savegc(ctx);
@@ -390,6 +429,8 @@ static void klisp_register_kernel_builtins(fe_Context *ctx)
 		{ "list-netdevs",   cf_list_netdevs },
 		{ "meminfo",        cf_meminfo },
 		{ "uname",          cf_uname },
+		{ "env",            cf_env },
+		{ "functions",      cf_functions },
 	};
 	int i;
 
@@ -638,10 +679,38 @@ static void swank_autodoc(struct repl_io *io, long id)
 	swank_return_ok(io, id, "(:not-available)");
 }
 
-/* completions (TAB): SLIME destructures as (completions partial). */
-static void swank_completions(struct repl_io *io, long id)
+/* completions (TAB): return ((match ...) prefix) of interned symbols whose
+ * name starts with the typed prefix. SLIME destructures as (completions
+ * partial), so the value is always a 2-list. */
+static void swank_completions(struct repl_io *io, fe_Context *ctx,
+			     fe_Object *form, long id)
 {
-	swank_return_ok(io, id, "(nil \"\")");
+	fe_Object *arg = list_nth(ctx, form, 1);	/* prefix string */
+	char pref[96], name[96];
+	fe_Object *s;
+	int plen, p = 0;
+
+	fe_tostring(ctx, arg, pref, sizeof(pref));
+	plen = (int)strlen(pref);
+
+	bputs(io->msgbuf, MSGSZ, &p, "(:return (:ok ((");
+	for (s = fe_symbols(ctx); !fe_isnil(ctx, s); s = fe_cdr(ctx, s)) {
+		fe_tostring(ctx, fe_car(ctx, s), name, sizeof(name));
+		if (!strncmp(name, pref, plen)) {
+			bputstr(io->msgbuf, MSGSZ, &p, name);
+			bput(io->msgbuf, MSGSZ, &p, ' ');
+		}
+	}
+	bputs(io->msgbuf, MSGSZ, &p, ") ");
+	bputstr(io->msgbuf, MSGSZ, &p, pref);
+	{
+		char t[24];
+
+		snprintf(t, sizeof(t), ")) %ld)", id);
+		bputs(io->msgbuf, MSGSZ, &p, t);
+	}
+	io->msgbuf[p] = '\0';
+	swank_emit(io, io->msgbuf);
 }
 
 /* listener-eval: evaluate the user string, stream any (print ...) output, then
@@ -716,6 +785,108 @@ static void swank_interactive_eval(struct repl_io *io, fe_Context *ctx,
 	swank_emit(io, io->msgbuf);
 }
 
+/* ---- inspector --------------------------------------------------------- *
+ * Inspector state lives in two interned symbols so the GC keeps it alive
+ * across rex round-trips (symbols are GC roots; a symbol's value is marked):
+ *   %insp-cur%   - the object currently being inspected
+ *   %insp-stack% - list of previously-inspected objects, for "pop"
+ * Lists render with one clickable (:value ...) per element; clicking sends
+ * inspect-nth-part, which drills into that already-snapshotted sub-object.
+ */
+#define INSP_CUR	"%insp-cur%"
+#define INSP_STACK	"%insp-stack%"
+
+static fe_Object *sym_get(fe_Context *ctx, const char *n)
+{
+	return fe_eval(ctx, fe_symbol(ctx, n));
+}
+static void sym_put(fe_Context *ctx, const char *n, fe_Object *v)
+{
+	fe_set(ctx, fe_symbol(ctx, n), v);
+}
+
+/* Emit (:return (:ok (:title T :id 0 :content (PIECES LEN 0 LEN))) id). */
+static void inspector_render(struct repl_io *io, fe_Context *ctx,
+			     fe_Object *o, long id)
+{
+	int p = 0, npieces = 0;
+	char buf[160], t[64];
+	int is_pair = (fe_type(ctx, o) == FE_TPAIR);
+
+	if (is_pair)
+		strscpy(buf, "List", sizeof(buf));
+	else
+		fe_tostring(ctx, o, buf, sizeof(buf));
+
+	bputs(io->msgbuf, MSGSZ, &p, "(:return (:ok (:title ");
+	bputstr(io->msgbuf, MSGSZ, &p, buf);
+	bputs(io->msgbuf, MSGSZ, &p, " :id 0 :content ((");
+
+	if (is_pair) {
+		fe_Object *e = o;
+		int i = 0;
+
+		while (fe_type(ctx, e) == FE_TPAIR && p < MSGSZ - 256) {
+			fe_tostring(ctx, fe_car(ctx, e), buf, sizeof(buf));
+			bputs(io->msgbuf, MSGSZ, &p, "(:value ");
+			bputstr(io->msgbuf, MSGSZ, &p, buf);
+			snprintf(t, sizeof(t), " %d) ", i);
+			bputs(io->msgbuf, MSGSZ, &p, t);
+			bputstr(io->msgbuf, MSGSZ, &p, "\n");
+			bput(io->msgbuf, MSGSZ, &p, ' ');
+			npieces += 2;
+			e = fe_cdr(ctx, e);
+			i++;
+		}
+	} else {
+		fe_tostring(ctx, o, buf, sizeof(buf));
+		bputstr(io->msgbuf, MSGSZ, &p, buf);
+		npieces = 1;
+	}
+
+	snprintf(t, sizeof(t), ") %d 0 %d))) %ld)", npieces, npieces, id);
+	bputs(io->msgbuf, MSGSZ, &p, t);
+	io->msgbuf[p] = '\0';
+	swank_emit(io, io->msgbuf);
+}
+
+static void swank_init_inspector(struct repl_io *io, fe_Context *ctx,
+				 fe_Object *form, long id)
+{
+	fe_Object *o;
+
+	fe_tostring(ctx, list_nth(ctx, form, 1), io->scratch, SCRATCHSZ);
+	o = eval_string(ctx, io->scratch);	/* may longjmp on error */
+	sym_put(ctx, INSP_CUR, o);
+	sym_put(ctx, INSP_STACK, fe_bool(ctx, 0));
+	inspector_render(io, ctx, o, id);
+}
+
+static void swank_inspect_nth_part(struct repl_io *io, fe_Context *ctx,
+				   fe_Object *form, long id)
+{
+	long n = (long)fe_tonumber(ctx, list_nth(ctx, form, 1));
+	fe_Object *cur = sym_get(ctx, INSP_CUR);
+	fe_Object *part = list_nth(ctx, cur, (int)n);
+
+	sym_put(ctx, INSP_STACK, fe_cons(ctx, cur, sym_get(ctx, INSP_STACK)));
+	sym_put(ctx, INSP_CUR, part);
+	inspector_render(io, ctx, part, id);
+}
+
+static void swank_inspector_pop(struct repl_io *io, fe_Context *ctx, long id)
+{
+	fe_Object *st = sym_get(ctx, INSP_STACK);
+
+	if (fe_isnil(ctx, st)) {
+		swank_return_ok_nil(io, id);
+		return;
+	}
+	sym_put(ctx, INSP_CUR, fe_car(ctx, st));
+	sym_put(ctx, INSP_STACK, fe_cdr(ctx, st));
+	inspector_render(io, ctx, sym_get(ctx, INSP_CUR), id);
+}
+
 /* Dispatch one (:emacs-rex FORM PACKAGE THREAD ID). Matches on a substring of
  * the operator name so it works across SLIME's swank: / swank-repl: packages. */
 static void swank_handle_rex(struct repl_io *io, fe_Context *ctx)
@@ -746,9 +917,17 @@ static void swank_handle_rex(struct repl_io *io, fe_Context *ctx)
 	else if (strstr(opname, "autodoc"))
 		swank_autodoc(io, id);
 	else if (strstr(opname, "completions"))
-		swank_completions(io, id);
+		swank_completions(io, ctx, form, id);
+	else if (strstr(opname, "init-inspector"))
+		swank_init_inspector(io, ctx, form, id);
+	else if (strstr(opname, "nth-part"))
+		swank_inspect_nth_part(io, ctx, form, id);
+	else if (strstr(opname, "inspector-pop"))
+		swank_inspector_pop(io, ctx, id);
+	else if (strstr(opname, "quit-inspector"))
+		swank_return_ok_nil(io, id);		/* state is per-eval; nothing to drop */
 	else
-		swank_return_ok_nil(io, id);		/* require/arglist/... */
+		swank_return_ok_nil(io, id);		/* require/arglist/inspector-range/... */
 }
 
 static void klisp_swank_serve(struct repl_io *io, fe_Context *ctx)

@@ -70,6 +70,18 @@
             (error (format "<error %S>" e)))))
   (klisp-check (consp ad) "autodoc returns a list" (format "=> %S" ad)))
 
+;; inspector: open it on a list and confirm SLIME renders the parts (this is
+;; the real client path — slime-open-inspector parsing our istate format).
+(slime-eval-async '(swank:init-inspector "(list 11 22 33)") #'slime-open-inspector)
+(let ((n 0))
+  (while (and (< n 100) (not (get-buffer "*slime-inspector*")))
+    (accept-process-output nil 0.1) (setq n (1+ n))))
+(let ((b (get-buffer "*slime-inspector*")))
+  (klisp-check (and b (with-current-buffer b
+                        (and (string-match-p "List" (buffer-string))
+                             (string-match-p "22" (buffer-string)))))
+               "inspector renders a list" ""))
+
 ;; error recovery: a bad form aborts (SLIME signals), the next form still works
 (let ((aborted nil))
   (condition-case _e (klisp-eval "(/ 1 0)") (error (setq aborted t)))

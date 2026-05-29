@@ -460,8 +460,20 @@ places — only the build's target kernel headers differ.
      `module_mutex`/`modules`, neither EXPORT_SYMBOL'd; walking it unlocked
      risks use-after-free against a concurrent `rmmod`. Revisit if a safe
      accessor is found.
-5. **M5 — Inspector.** Inspector handlers + per-type `inspect` parts +
-   re-snapshot-on-drill-in → click-through object navigation in SLIME.
+5. **M5 — Inspector. ✓ DONE.** `swank:init-inspector` / `inspect-nth-part` /
+   `inspector-pop`: lists render with one clickable `(:value …)` part per
+   element; clicking drills into that already-snapshotted sub-object, `pop`
+   walks back. Inspector state (current object + history) is kept alive across
+   rex round-trips by binding it to interned symbols (`%insp-cur%`,
+   `%insp-stack%`) — symbols are GC roots, so the held objects survive GC.
+   *Verified with real Emacs*: `M-x slime-inspect` renders a navigable buffer.
+   - Reached via `C-c I` / `M-x slime-inspect` (type an expr, e.g.
+     `(list-processes)`), then RET/click parts. **Clicking a value in the REPL
+     output** is a *separate* feature (SLIME "presentations": wrap output in
+     `:presentation-start/-end` + a presentation→object table) — not yet done.
+   - Also added discovery: `(functions)` / `(env)` builtins (from the
+     interpreter's symbol table) and real TAB completion
+     (`swank:simple-completions` matches interned symbols).
 6. **M6 — Resilience hardening.** Soft-reset command, worker-restart
    supervisor, `copy_from_kernel_nofault` snapshot reads, robust teardown — the
    §7 recovery story made real and tested (kill the worker, watch it come back).

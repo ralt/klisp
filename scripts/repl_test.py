@@ -73,6 +73,11 @@ CASES = [
     ("(meminfo)", "totalram"),
     ("(uname)", "6.12"),
     ("(uname)", "Linux"),
+    # discovery
+    ("(atom (functions))", "nil"),               # functions returns a list
+    ("(functions)", "car"),                      # a primitive
+    ("(functions)", "list-processes"),           # a kernel builtin
+    ("(env)", "uname"),
 ]
 
 

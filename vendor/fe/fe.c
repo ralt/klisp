@@ -299,6 +299,12 @@ fe_Object* fe_symbol(fe_Context *ctx, const char *name) {
 }
 
 
+/* klisp: expose the interned-symbol list for discovery/completion */
+fe_Object* fe_symbols(fe_Context *ctx) {
+  return ctx->symlist;
+}
+
+
 fe_Object* fe_cfunc(fe_Context *ctx, fe_CFunc fn) {
   fe_Object *obj = object(ctx);
   settype(obj, FE_TCFUNC);

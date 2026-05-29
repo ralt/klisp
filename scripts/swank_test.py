@@ -151,8 +151,19 @@ def main():
     check("autodoc shape", ":ok" in ret and "nil)" not in ret and
           ("not-available" in ret or '"' in ret), repr(ret))
 
-    ret, _, _ = run_rex(s, '(swank:simple-completions "ca" "klisp-user")', 4)
-    check("completions shape", ":ok (" in ret, repr(ret))
+    # completion now returns matching symbols from the interpreter
+    ret, _, _ = run_rex(s, '(swank:simple-completions "list-" "klisp-user")', 4)
+    check("completion list-", "list-processes" in ret and "list-netdevs" in ret,
+          repr(ret))
+
+    # inspector: init renders clickable (:value ...) parts; drill into one
+    ret, _, _ = run_rex(s, '(swank:init-inspector "(list 7 8 9)")', 5)
+    check("init-inspector", ":title" in ret and ':value' in ret and '"8"' in ret,
+          repr(ret[:120]))
+    ret, _, _ = run_rex(s, "(swank:inspect-nth-part 1)", 6)
+    check("inspect-nth-part", '"8"' in ret, repr(ret[:120]))
+    ret, _, _ = run_rex(s, "(swank:inspector-pop)", 7)
+    check("inspector-pop", ":title" in ret and '"7"' in ret, repr(ret[:120]))
 
     # --- eval cases ---
     rid = 10

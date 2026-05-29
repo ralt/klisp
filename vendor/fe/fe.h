@@ -42,6 +42,7 @@ fe_Object* fe_bool(fe_Context *ctx, int b);
 fe_Object* fe_number(fe_Context *ctx, fe_Number n);
 fe_Object* fe_string(fe_Context *ctx, const char *str);
 fe_Object* fe_symbol(fe_Context *ctx, const char *name);
+fe_Object* fe_symbols(fe_Context *ctx); /* klisp: interned symbol list */
 fe_Object* fe_cfunc(fe_Context *ctx, fe_CFunc fn);
 fe_Object* fe_ptr(fe_Context *ctx, void *ptr);
 fe_Object* fe_list(fe_Context *ctx, fe_Object **objs, int n);
