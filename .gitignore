@@ -1,0 +1,15 @@
+# Build output
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.*.cmd
+.module-common.o
+Module.symvers
+modules.order
+.tmp_versions/
+
+# Fetched kernel image / initramfs / busybox (large, reproducible)
+.devkernel/
