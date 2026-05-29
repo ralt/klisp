@@ -65,10 +65,10 @@ Early. Built in milestones:
 - **M4 — done.** Read-only kernel objects as Lisp data: `(list-processes)`,
   `(list-netdevs)`, `(meminfo)`, `(uname)` — snapshotted under lock into
   immutable plists.
-- **M5 — done.** SLIME inspector (`C-c I` / `M-x slime-inspect`) with
-  click-through navigation; discovery via `(functions)` / `(env)` and TAB
-  completion.
-- **Upcoming.** More kernel objects; clickable REPL-output presentations. See
+- **M5 — done.** SLIME inspector with click-through navigation — including
+  **clickable REPL-output presentations** (click a result to inspect it);
+  discovery via `(functions)` / `(env)` and TAB completion.
+- **Upcoming.** More kernel objects and richer inspector rendering. See
   `DESIGN.md` §9.
 
 ## Quickstart (build → boot → connect)
@@ -108,10 +108,10 @@ In Emacs once connected:
 
 - **Discover** what's available: evaluate `(functions)` (or `(env)`), or press
   `TAB` to complete a partially-typed name.
-- **Inspect** an object: `C-c I` (or `M-x slime-inspect`), type an expression
-  like `(list-processes)`, then `RET`/click the parts to drill in and `l` to go
-  back. (Clicking a value directly in REPL *output* isn't wired up yet — use
-  `C-c I` for now.)
+- **Inspect** an object: either **click the result** of a REPL evaluation, or
+  `C-c I` (or `M-x slime-inspect`) and type an expression like
+  `(list-processes)`. Then `RET`/click the parts to drill in, and `l` to go
+  back.
 
 Inside the VM you can `rmmod klisp` / `insmod /klisp.ko bind_addr=0.0.0.0` to
 test reload, or boot with the `klisp_selftest` kernel cmdline token to run an

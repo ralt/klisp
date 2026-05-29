@@ -15,9 +15,10 @@
 (require 'slime)
 (setq slime-protocol-version 'ignore)   ; tolerate version differences
 (setq slime-contribs nil)               ; avoid slime-fancy (needs macrostep)
-(slime-setup)
-(require 'slime-repl)                    ; REPL contrib (create-repl handshake)
-(require 'slime-autodoc)                 ; eldoc-on-type path (broke real typing)
+;; load the contribs a normal user has, minus the macrostep-dependent ones:
+;; slime-repl (REPL + create-repl), slime-autodoc (eldoc-on-type), and
+;; slime-presentations (clickable/inspectable REPL output).
+(slime-setup '(slime-repl slime-autodoc slime-presentations))
 
 (defvar klisp-port (string-to-number (or (getenv "KLISP_PORT") "4005")))
 (defvar klisp-connected nil)
@@ -81,6 +82,31 @@
                         (and (string-match-p "List" (buffer-string))
                              (string-match-p "22" (buffer-string)))))
                "inspector renders a list" ""))
+
+;; presentations: a REPL result must be a clickable presentation that opens the
+;; inspector — the "click the output object" path the user wanted.
+(when (get-buffer "*slime-inspector*") (kill-buffer "*slime-inspector*"))
+(let ((rb (slime-repl-buffer)))
+  (if (not rb)
+      (klisp-check nil "repl buffer present" "")
+    (with-current-buffer rb
+      (goto-char (point-max))
+      (insert "(list 44 55 66)")
+      (slime-repl-return)
+      (let ((n 0)) (while (< n 80) (accept-process-output nil 0.1) (setq n (1+ n))))
+      (let ((pos (text-property-not-all (point-min) (point-max)
+                                        'slime-repl-presentation nil)))
+        (klisp-check pos "repl result is a clickable presentation"
+                     (format "at %S" pos))
+        (when pos
+          (slime-inspect-presentation-at-point pos)
+          (let ((n 0))
+            (while (and (< n 80) (not (get-buffer "*slime-inspector*")))
+              (accept-process-output nil 0.1) (setq n (1+ n))))
+          (let ((b (get-buffer "*slime-inspector*")))
+            (klisp-check (and b (with-current-buffer b
+                                  (string-match-p "55" (buffer-string))))
+                         "clicking the result opens the inspector" "")))))))
 
 ;; error recovery: a bad form aborts (SLIME signals), the next form still works
 (let ((aborted nil))

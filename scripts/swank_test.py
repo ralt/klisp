@@ -9,6 +9,7 @@ swank-repl:listener-eval requests, asserting the :repl-result and :return for
 each. Covers the primitives end-to-end through the protocol plus error
 (:abort) handling. Exits non-zero on any failure.
 """
+import re
 import socket
 import sys
 import time
@@ -164,6 +165,25 @@ def main():
     check("inspect-nth-part", '"8"' in ret, repr(ret[:120]))
     ret, _, _ = run_rex(s, "(swank:inspector-pop)", 7)
     check("inspector-pop", ":title" in ret and '"7"' in ret, repr(ret[:120]))
+
+    # presentations: once the client requests them, repl results are bracketed
+    # with :presentation-start/-end and become inspectable by id.
+    run_rex(s, "(swank:swank-require (quote (swank-presentations)))", 8)
+    send_rex(s, '(swank-repl:listener-eval "(list 5 6)")', 9)
+    pid = None
+    while True:
+        m = recv_msg(s)
+        mm = re.search(r":presentation-start (\d+)", m)
+        if mm:
+            pid = mm.group(1)
+        if m.startswith("(:return"):
+            break
+    check("repl result is a presentation", pid is not None, f"pid={pid}")
+    if pid is not None:
+        # SLIME quotes the id: (swank:inspect-presentation 'ID nil)
+        ret, _, _ = run_rex(s, f"(swank:inspect-presentation '{pid} nil)", 10)
+        check("inspect-presentation -> inspector",
+              ":title" in ret and ":value" in ret, repr(ret[:120]))
 
     # --- eval cases ---
     rid = 10

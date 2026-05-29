@@ -85,6 +85,8 @@ struct repl_io {
 	int caplen;
 	bool capturing;
 	void *kobj_scratch;		/* kmalloc'd snapshot, freed on error unwind */
+	bool presentations;		/* client requested SLIME presentations */
+	long pres_next;			/* next presentation id */
 };
 
 static struct repl_io *g_io;
@@ -713,8 +715,11 @@ static void swank_completions(struct repl_io *io, fe_Context *ctx,
 	swank_emit(io, io->msgbuf);
 }
 
+static long present(struct repl_io *io, fe_Context *ctx, fe_Object *obj);
+
 /* listener-eval: evaluate the user string, stream any (print ...) output, then
- * the printed result as a :repl-result, then close the rex with :ok. */
+ * the printed result as a :repl-result, then close the rex with :ok. When the
+ * client supports presentations, the result is bracketed so it's clickable. */
 static void swank_listener_eval(struct repl_io *io, fe_Context *ctx,
 				fe_Object *form, long id)
 {
@@ -740,21 +745,47 @@ static void swank_listener_eval(struct repl_io *io, fe_Context *ctx,
 	}
 
 	fe_tostring(ctx, res, io->scratch, SCRATCHSZ);	/* printed result */
-	p = 0;
-	bputs(io->msgbuf, MSGSZ, &p, "(:write-string ");
-	{
-		/* append result + newline as one escaped string */
+
+	if (io->presentations) {
+		/* Bracket the value so SLIME makes it a clickable presentation
+		 * mapped to this object; the trailing newline stays outside. */
+		long pid = present(io, ctx, res);
+		char t[40];
+
+		p = 0;
+		snprintf(t, sizeof(t), "(:presentation-start %ld :repl-result)", pid);
+		bputs(io->msgbuf, MSGSZ, &p, t);
+		io->msgbuf[p] = '\0';
+		swank_emit(io, io->msgbuf);
+
+		p = 0;
+		bputs(io->msgbuf, MSGSZ, &p, "(:write-string ");
+		bputstr(io->msgbuf, MSGSZ, &p, io->scratch);
+		bputs(io->msgbuf, MSGSZ, &p, " :repl-result)");
+		io->msgbuf[p] = '\0';
+		swank_emit(io, io->msgbuf);
+
+		p = 0;
+		snprintf(t, sizeof(t), "(:presentation-end %ld :repl-result)", pid);
+		bputs(io->msgbuf, MSGSZ, &p, t);
+		io->msgbuf[p] = '\0';
+		swank_emit(io, io->msgbuf);
+
+		swank_emit(io, "(:write-string \"\\n\" :repl-result)");
+	} else {
 		int q = (int)strlen(io->scratch);
 
-		if (q < SCRATCHSZ - 1) {
+		if (q < SCRATCHSZ - 1) {	/* append newline */
 			io->scratch[q] = '\n';
 			io->scratch[q + 1] = '\0';
 		}
+		p = 0;
+		bputs(io->msgbuf, MSGSZ, &p, "(:write-string ");
+		bputstr(io->msgbuf, MSGSZ, &p, io->scratch);
+		bputs(io->msgbuf, MSGSZ, &p, " :repl-result)");
+		io->msgbuf[p] = '\0';
+		swank_emit(io, io->msgbuf);
 	}
-	bputstr(io->msgbuf, MSGSZ, &p, io->scratch);
-	bputs(io->msgbuf, MSGSZ, &p, " :repl-result)");
-	io->msgbuf[p] = '\0';
-	swank_emit(io, io->msgbuf);
 
 	swank_return_ok_nil(io, id);
 }
@@ -803,6 +834,39 @@ static fe_Object *sym_get(fe_Context *ctx, const char *n)
 static void sym_put(fe_Context *ctx, const char *n, fe_Object *v)
 {
 	fe_set(ctx, fe_symbol(ctx, n), v);
+}
+
+/* Presentation table: %present% holds an alist ((id . obj) ...), newest first,
+ * capped at PRESENT_MAX so a long session can't pin the whole heap. GC-rooted
+ * via the symbol. Used to make REPL-result output clickable/inspectable. */
+#define PRESENT_SYM	"%present%"
+#define PRESENT_MAX	64
+
+static long present(struct repl_io *io, fe_Context *ctx, fe_Object *obj)
+{
+	long id = io->pres_next++;
+	fe_Object *items[PRESENT_MAX], *p;
+	int n = 0;
+
+	items[n++] = fe_cons(ctx, fe_number(ctx, id), obj);	/* (id . obj) */
+	for (p = sym_get(ctx, PRESENT_SYM);
+	     n < PRESENT_MAX && fe_type(ctx, p) == FE_TPAIR; p = fe_cdr(ctx, p))
+		items[n++] = fe_car(ctx, p);
+	sym_put(ctx, PRESENT_SYM, fe_list(ctx, items, n));
+	return id;
+}
+
+static fe_Object *present_lookup(fe_Context *ctx, long id)
+{
+	fe_Object *p, *cell;
+
+	for (p = sym_get(ctx, PRESENT_SYM); fe_type(ctx, p) == FE_TPAIR;
+	     p = fe_cdr(ctx, p)) {
+		cell = fe_car(ctx, p);
+		if ((long)fe_tonumber(ctx, fe_car(ctx, cell)) == id)
+			return fe_cdr(ctx, cell);
+	}
+	return fe_bool(ctx, 0);	/* nil — evicted or unknown */
 }
 
 /* Emit (:return (:ok (:title T :id 0 :content (PIECES LEN 0 LEN))) id). */
@@ -887,6 +951,45 @@ static void swank_inspector_pop(struct repl_io *io, fe_Context *ctx, long id)
 	inspector_render(io, ctx, sym_get(ctx, INSP_CUR), id);
 }
 
+/* SLIME quotes some args, e.g. (swank:inspect-presentation 'ID nil). Unwrap a
+ * leading (quote X) -> X. */
+static fe_Object *unquote(fe_Context *ctx, fe_Object *o)
+{
+	char head[8];
+
+	if (fe_type(ctx, o) == FE_TPAIR) {
+		fe_tostring(ctx, fe_car(ctx, o), head, sizeof(head));
+		if (!strcmp(head, "quote"))
+			return fe_car(ctx, fe_cdr(ctx, o));
+	}
+	return o;
+}
+
+/* Clicking a REPL-output presentation: inspect the object behind that id. */
+static void swank_inspect_presentation(struct repl_io *io, fe_Context *ctx,
+				       fe_Object *form, long id)
+{
+	long pid = (long)fe_tonumber(ctx, unquote(ctx, list_nth(ctx, form, 1)));
+	fe_Object *o = present_lookup(ctx, pid);
+
+	sym_put(ctx, INSP_CUR, o);
+	sym_put(ctx, INSP_STACK, fe_bool(ctx, 0));
+	inspector_render(io, ctx, o, id);
+}
+
+/* swank-require: note whether the client wants presentations so we only emit
+ * presentation markers to clients that understand them. */
+static void swank_swank_require(struct repl_io *io, fe_Context *ctx,
+				fe_Object *form, long id)
+{
+	char buf[256];
+
+	fe_tostring(ctx, form, buf, sizeof(buf));
+	if (strstr(buf, "presentation"))
+		io->presentations = true;
+	swank_return_ok_nil(io, id);
+}
+
 /* Dispatch one (:emacs-rex FORM PACKAGE THREAD ID). Matches on a substring of
  * the operator name so it works across SLIME's swank: / swank-repl: packages. */
 static void swank_handle_rex(struct repl_io *io, fe_Context *ctx)
@@ -920,10 +1023,14 @@ static void swank_handle_rex(struct repl_io *io, fe_Context *ctx)
 		swank_completions(io, ctx, form, id);
 	else if (strstr(opname, "init-inspector"))
 		swank_init_inspector(io, ctx, form, id);
+	else if (strstr(opname, "inspect-presentation"))
+		swank_inspect_presentation(io, ctx, form, id);
 	else if (strstr(opname, "nth-part"))
 		swank_inspect_nth_part(io, ctx, form, id);
 	else if (strstr(opname, "inspector-pop"))
 		swank_inspector_pop(io, ctx, id);
+	else if (strstr(opname, "swank-require"))
+		swank_swank_require(io, ctx, form, id);
 	else if (strstr(opname, "quit-inspector"))
 		swank_return_ok_nil(io, id);		/* state is per-eval; nothing to drop */
 	else

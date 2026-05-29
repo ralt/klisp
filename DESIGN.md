@@ -467,10 +467,16 @@ places — only the build's target kernel headers differ.
    rex round-trips by binding it to interned symbols (`%insp-cur%`,
    `%insp-stack%`) — symbols are GC roots, so the held objects survive GC.
    *Verified with real Emacs*: `M-x slime-inspect` renders a navigable buffer.
-   - Reached via `C-c I` / `M-x slime-inspect` (type an expr, e.g.
-     `(list-processes)`), then RET/click parts. **Clicking a value in the REPL
-     output** is a *separate* feature (SLIME "presentations": wrap output in
-     `:presentation-start/-end` + a presentation→object table) — not yet done.
+   - Reached via `C-c I` / `M-x slime-inspect`, **or by clicking the result in
+     the REPL** (see presentations below).
+   - **Presentations (clickable REPL output). ✓ DONE.** When the client
+     requests them (detected from `swank-require`), each REPL result is
+     bracketed with `:presentation-start/-end` carrying an id and recorded in a
+     GC-rooted, capped id→object table (`%present%`). Clicking the result sends
+     `swank:inspect-presentation 'id`, which we look up and inspect. (SLIME
+     quotes the id — we unwrap a leading `(quote …)`.) *Verified with real
+     Emacs*: evaluating in the REPL yields a clickable presentation that opens
+     the inspector.
    - Also added discovery: `(functions)` / `(env)` builtins (from the
      interpreter's symbol table) and real TAB completion
      (`swank:simple-completions` matches interned symbols).
