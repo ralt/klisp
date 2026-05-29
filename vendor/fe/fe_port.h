@@ -34,6 +34,10 @@ void klisp_write_char(struct fe_Context *ctx, void *udata, char chr);
  * (defensive — a handler is normally always set). */
 void klisp_emergency_longjmp(void);
 
+/* Watchdog: true once the current top-level eval has run past its deadline, so
+ * a runaway eval (e.g. (while 1 1)) aborts instead of hanging the worker. */
+bool klisp_eval_timed_out(void);
+
 /* Stack-exhaustion guard for the recursive evaluator: the kernel stack is tiny
  * (~16 KB), so deep/runaway recursion must raise a Lisp error before it
  * overflows the C stack and oopses. */

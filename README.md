@@ -68,6 +68,9 @@ Early. Built in milestones:
 - **M5 — done.** SLIME inspector with click-through navigation — including
   **clickable REPL-output presentations** (click a result to inspect it);
   discovery via `(functions)` / `(env)` and TAB completion.
+- **M6 — done.** Resilience: a watchdog aborts runaway evals (e.g. `(while 1
+  1)`) instead of hanging; a supervisor kthread restarts the worker on request;
+  `debugfs` control/status; snapshot reads use `copy_from_kernel_nofault`.
 - **Upcoming.** More kernel objects and richer inspector rendering. See
   `DESIGN.md` §9.
 
@@ -119,6 +122,16 @@ In Emacs once connected:
 Inside the VM you can `rmmod klisp` / `insmod /klisp.ko bind_addr=0.0.0.0` to
 test reload, or boot with the `klisp_selftest` kernel cmdline token to run an
 automated rmmod/reload self-test.
+
+Recovery without a reload (debugfs, in the guest):
+
+```sh
+cat /sys/kernel/debug/klisp/status        # bind, worker state, restarts, ...
+echo 1 > /sys/kernel/debug/klisp/reset    # supervisor restarts the worker
+```
+
+A runaway evaluation (e.g. `(while 1 1)`) is aborted automatically after
+`eval_timeout_s` seconds rather than wedging the session.
 
 ## Testing
 

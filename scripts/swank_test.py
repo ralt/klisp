@@ -47,6 +47,9 @@ CASES = [
     ("(= loop (fn () (loop)))", "nil", "ok"),
     ("(loop)", "recursion too deep", "abort"),
     ("(+ 2 2)", "4", "ok"),
+    # runaway-eval watchdog
+    ("(while 1 1)", "timed out", "abort"),
+    ("(+ 3 3)", "6", "ok"),
     # read-only kernel objects (live values, assert structure)
     ("(car (list-processes))", ":pid", "ok"),
     ("(list-netdevs)", "lo", "ok"),

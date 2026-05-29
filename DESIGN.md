@@ -482,9 +482,25 @@ places — only the build's target kernel headers differ.
    - Also added discovery: `(functions)` / `(env)` builtins (from the
      interpreter's symbol table) and real TAB completion
      (`swank:simple-completions` matches interned symbols).
-6. **M6 — Resilience hardening.** Soft-reset command, worker-restart
-   supervisor, `copy_from_kernel_nofault` snapshot reads, robust teardown — the
-   §7 recovery story made real and tested (kill the worker, watch it come back).
+6. **M6 — Resilience hardening. ✓ DONE.** The §7 recovery story made real:
+   - **Eval watchdog**: each top-level eval gets a deadline (module param
+     `eval_timeout_s`, default 5); the eval wrapper aborts a runaway eval
+     (e.g. `(while 1 1)`) with a Lisp error instead of hanging the worker.
+     (The deadline is disarmed outside top-level eval so internal `fe_eval`
+     plumbing — `sym_get` for the inspector/presentations — can't trip it.)
+   - **Supervisor kthread** owns the worker; on a `reset`/`kill-worker` request
+     it does a clean `kthread_stop` + restart. The worker only ever exits via
+     `kthread_should_stop()` — `kthread_stop` on a self-returned kthread
+     corrupts refcounts (learned the hard way: it NULL-deref'd). A genuine
+     worker oops leaves a tainted kernel; the backstop there stays rmmod/insmod.
+   - **debugfs** `/sys/kernel/debug/klisp/`: `status` (bind, worker state,
+     restarts, conns, heartbeat age, eval timeout), `reset`, `kill-worker`.
+   - **`copy_from_kernel_nofault`** for the snapshot field reads (comm, netdev
+     name), so a racing teardown returns `?` instead of faulting.
+   - **Robust teardown**: supervisor + worker stop cleanly on unload.
+   *Verified in QEMU*: watchdog aborts `(while 1 1)` and recovers; killing the
+   worker via debugfs respawns it (starts 1→2) and the REPL keeps serving; no
+   Oops/panic.
 7. **Later.** Mark-sweep GC; explicit-stack evaluator; more builtins;
    autodoc/completion; optionally live (non-snapshot) objects and method calls.
 

@@ -65,6 +65,9 @@ CASES = [
     ("(= loop (fn () (loop)))", "nil"),
     ("(loop)", "recursion too deep"),
     ("(+ 2 2)", "4"),
+    # runaway-eval watchdog: an infinite loop must abort, not hang the worker
+    ("(while 1 1)", "timed out"),
+    ("(+ 3 3)", "6"),                            # recovered after timeout
     # read-only kernel objects (values are live, so assert structure)
     ("(atom (list-processes))", "nil"),          # non-empty list, not an atom
     ("(car (list-processes))", ":pid"),          # first proc is a plist

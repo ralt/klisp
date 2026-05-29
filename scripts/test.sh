@@ -64,5 +64,39 @@ if grep -qE "Oops|kernel BUG|Kernel panic|Call Trace" "${SERIAL}"; then
 	rc=1
 fi
 
+# --- supervisor self-test: a fresh boot that kills the worker and confirms the
+#     supervisor respawns it (and the REPL still serves) ---
+echo "-- supervisor restart (kill worker, expect respawn) --"
+kill -9 "${QPID}" 2>/dev/null || true
+SERIAL2="${ROOT}/.devkernel/serial-m6.log"; rm -f "${SERIAL2}"
+qemu-system-x86_64 "${ACCEL[@]}" \
+	-kernel "${ROOT}/.devkernel/vmlinuz" \
+	-initrd "${ROOT}/.devkernel/initramfs.gz" \
+	-append "console=ttyS0 rdinit=/init panic=-1 klisp_m6test" \
+	-m 512 -nographic -no-reboot \
+	-netdev user,id=n0 -device e1000,netdev=n0 \
+	</dev/null >"${SERIAL2}" 2>&1 &
+QPID2=$!
+cleanup() { kill -9 "${QPID}" "${QPID2}" 2>/dev/null || true; }
+trap cleanup EXIT
+for _ in $(seq 1 80); do
+	grep -q "MARK-m6-end" "${SERIAL2}" 2>/dev/null && break
+	grep -qE "Oops|kernel BUG|Kernel panic" "${SERIAL2}" 2>/dev/null && break
+	sleep 0.5
+done
+before=$(sed -n 's/^MARK-starts-before=//p' "${SERIAL2}" | tr -dc 0-9)
+after=$(sed -n 's/^MARK-starts-after=//p' "${SERIAL2}" | tr -dc 0-9)
+if grep -q "MARK-repl-ok" "${SERIAL2}" && \
+   [ -n "${before}" ] && [ -n "${after}" ] && [ "${after}" -gt "${before}" ]; then
+	echo "[ok  ] supervisor respawned worker (starts ${before} -> ${after}); REPL recovered"
+else
+	echo "[FAIL] supervisor restart (before=${before} after=${after})"
+	grep -E "MARK-|Oops|BUG|panic" "${SERIAL2}" || true
+	rc=1
+fi
+if grep -qE "Oops|kernel BUG|Kernel panic|Call Trace" "${SERIAL2}"; then
+	echo "!! kernel fault during supervisor test"; rc=1
+fi
+
 [ "${rc}" -eq 0 ] && echo ">> PASS" || echo ">> FAIL (rc=${rc})"
 exit "${rc}"

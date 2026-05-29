@@ -604,6 +604,7 @@ static fe_Object* argstoenv(fe_Context *ctx, fe_Object *prm, fe_Object *arg, fe_
  * stack — deep/runaway recursion raises a Lisp error instead of oopsing. */
 static fe_Object* eval(fe_Context *ctx, fe_Object *obj, fe_Object *env, fe_Object **newenv) {
   if (klisp_stack_low()) { fe_error(ctx, "eval: recursion too deep"); }
+  if (klisp_eval_timed_out()) { fe_error(ctx, "eval: timed out"); }
   return eval_inner(ctx, obj, env, newenv);
 }
 

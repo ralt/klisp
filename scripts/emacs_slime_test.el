@@ -94,19 +94,25 @@
       (insert "(list 44 55 66)")
       (slime-repl-return)
       (let ((n 0)) (while (< n 80) (accept-process-output nil 0.1) (setq n (1+ n))))
-      (let ((pos (text-property-not-all (point-min) (point-max)
-                                        'slime-repl-presentation nil)))
-        (klisp-check pos "repl result is a clickable presentation"
+      (let* ((pos (text-property-not-all (point-min) (point-max)
+                                         'slime-repl-presentation nil))
+             (pres (and pos (get-text-property pos 'slime-repl-presentation))))
+        (klisp-check pres "repl result is a clickable presentation"
                      (format "at %S" pos))
-        (when pos
-          (slime-inspect-presentation-at-point pos)
-          (let ((n 0))
-            (while (and (< n 80) (not (get-buffer "*slime-inspector*")))
-              (accept-process-output nil 0.1) (setq n (1+ n))))
-          (let ((b (get-buffer "*slime-inspector*")))
-            (klisp-check (and b (with-current-buffer b
-                                  (string-match-p "55" (buffer-string))))
-                         "clicking the result opens the inspector" "")))))))
+        (when pres
+          ;; exactly what clicking a presentation does: inspect it by id
+          (slime-eval-async
+              `(swank:inspect-presentation ',(slime-presentation-id pres) nil)
+            #'slime-open-inspector)
+          (let ((n 0) (ok nil))
+            (while (and (< n 150) (not ok))
+              (accept-process-output nil 0.1)
+              (let ((b (get-buffer "*slime-inspector*")))
+                (when (and b (with-current-buffer b
+                               (string-match-p "55" (buffer-string))))
+                  (setq ok t)))
+              (setq n (1+ n)))
+            (klisp-check ok "clicking the result opens the inspector" "")))))))
 
 ;; error recovery: a bad form aborts (SLIME signals), the next form still works
 (let ((aborted nil))

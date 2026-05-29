@@ -22,6 +22,7 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/string.h>
@@ -37,6 +38,9 @@
 #include <linux/socket.h>
 #include <linux/uio.h>
 #include <linux/objtool.h>
+#include <linux/debugfs.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
 #include <net/net_namespace.h>		/* init_net */
 #include <net/sock.h>
 
@@ -61,8 +65,47 @@ static char *bind_addr = "127.0.0.1";
 module_param(bind_addr, charp, 0444);
 MODULE_PARM_DESC(bind_addr, "IPv4 address to bind (default 127.0.0.1)");
 
+static uint eval_timeout_s = 5;
+module_param(eval_timeout_s, uint, 0644);
+MODULE_PARM_DESC(eval_timeout_s, "abort a single eval after this many seconds (0 = off)");
+
+/* Deadline for the in-flight top-level eval (single worker, so one global is
+ * fine). Armed before each eval; checked in fe's eval wrapper. */
+static unsigned long eval_deadline;
+
+static void klisp_arm_eval_deadline(void)
+{
+	eval_deadline = eval_timeout_s
+		? jiffies + (unsigned long)eval_timeout_s * HZ : 0;
+}
+
+/* Disarm outside a top-level eval. Internal fe_eval calls (e.g. sym_get used by
+ * the inspector/presentations) must not trip a deadline left over from an
+ * earlier user eval. */
+static void klisp_disarm_eval_deadline(void)
+{
+	eval_deadline = 0;
+}
+
+bool klisp_eval_timed_out(void)
+{
+	return eval_deadline && time_after(jiffies, eval_deadline);
+}
+
 static struct socket *listen_sock;
-static struct task_struct *listen_thread;
+static struct task_struct *worker;	/* accept loop + connection handling */
+static struct task_struct *supervisor;	/* restarts the worker if it dies/hangs */
+
+static bool klisp_stopping;		/* module unloading */
+static atomic_t reset_req;		/* debugfs: restart the worker */
+static unsigned long worker_beat;	/* jiffies of last worker liveness sign */
+static unsigned int worker_starts;	/* how many times the worker has (re)started */
+static atomic_t conns_total;		/* connections served */
+
+static void klisp_beat(void)
+{
+	worker_beat = jiffies;
+}
 
 /* Per-connection state. One connection is served at a time (the listener runs
  * the session inline), so a single global pointer reaches the callbacks fe
@@ -136,6 +179,7 @@ static int io_getc(struct repl_io *io)
 		struct kvec vec = { .iov_base = io->rbuf, .iov_len = RBUFSZ };
 		int n;
 
+		klisp_beat();	/* alive while blocked on input (not during eval) */
 		if (kthread_should_stop()) {
 			io->eof = true;
 			return -1;
@@ -275,7 +319,9 @@ static fe_Object *cf_list_processes(fe_Context *ctx, fe_Object *args)
 		arr[n].pid = task_pid_nr(p);
 		arr[n].ppid = task_ppid_nr(p);
 		arr[n].state = READ_ONCE(p->__state);
-		memcpy(arr[n].comm, p->comm, TASK_COMM_LEN);
+		/* nofault: never fault even if the task is racing teardown */
+		if (copy_from_kernel_nofault(arr[n].comm, p->comm, TASK_COMM_LEN))
+			strscpy(arr[n].comm, "?", TASK_COMM_LEN);
 		arr[n].comm[TASK_COMM_LEN - 1] = '\0';
 		n++;
 	}
@@ -320,7 +366,8 @@ static fe_Object *cf_list_netdevs(fe_Context *ctx, fe_Object *args)
 	for_each_netdev_rcu(&init_net, dev) {
 		if (n >= KOBJ_MAX)
 			break;
-		memcpy(arr[n].name, dev->name, IFNAMSIZ);
+		if (copy_from_kernel_nofault(arr[n].name, dev->name, IFNAMSIZ))
+			strscpy(arr[n].name, "?", IFNAMSIZ);
 		arr[n].name[IFNAMSIZ - 1] = '\0';
 		arr[n].ifindex = dev->ifindex;
 		arr[n].mtu = dev->mtu;
@@ -488,11 +535,13 @@ static fe_Object *eval_string(fe_Context *ctx, const char *code)
 	fe_Object *obj, *res = fe_bool(ctx, 0); /* nil */
 	int gc = fe_savegc(ctx);
 
+	klisp_arm_eval_deadline();
 	while ((obj = fe_read(ctx, strrd_fn, &r)) != NULL) {
 		fe_restoregc(ctx, gc);
 		fe_pushgc(ctx, obj);
 		res = fe_eval(ctx, obj);
 	}
+	klisp_disarm_eval_deadline();
 	return res;
 }
 
@@ -526,11 +575,13 @@ static void klisp_raw_repl(struct repl_io *io, fe_Context *ctx)
 		fe_Object *obj;
 
 		fe_restoregc(ctx, gc);
+		klisp_disarm_eval_deadline();
 		if (kthread_should_stop() || io->eof)
 			break;
 		obj = fe_read(ctx, repl_readfn, io);
 		if (!obj)
 			break;
+		klisp_arm_eval_deadline();
 		obj = fe_eval(ctx, obj);
 		fe_write(ctx, obj, klisp_write_char, NULL, 0);
 		repl_puts(io, "\n> ");
@@ -1069,6 +1120,7 @@ static void klisp_swank_serve(struct repl_io *io, fe_Context *ctx)
 	for (;;) {
 		io->cur_id = -1;
 		io->capturing = false;
+		klisp_disarm_eval_deadline();
 		if (__builtin_setjmp(io->errjmp)) {
 			fe_restoregc(ctx, gc);
 			io->capturing = false;
@@ -1153,16 +1205,20 @@ out:
 	kfree(io);
 }
 
-/* ---- listener ---------------------------------------------------------- */
+/* ---- worker (accept loop) ---------------------------------------------- */
 
-static int klisp_listen_fn(void *data)
+static int klisp_worker_fn(void *data)
 {
-	pr_info("listener thread up\n");
-
+	(void)data;
+	/* Only ever exit via kthread_should_stop(): the supervisor drives stops
+	 * with kthread_stop(), and calling that on a self-returned kthread
+	 * corrupts its refcount. Restarts go through the supervisor. */
+	klisp_beat();
 	while (!kthread_should_stop()) {
 		struct socket *client = NULL;
 		int err = kernel_accept(listen_sock, &client, 0);
 
+		klisp_beat();
 		if (err == -EAGAIN || err == -EWOULDBLOCK ||
 		    err == -ERESTARTSYS)
 			continue;
@@ -1173,78 +1229,187 @@ static int klisp_listen_fn(void *data)
 			continue;
 		}
 
+		atomic_inc(&conns_total);
 		klisp_conn(client);
 		sock_release(client);
 	}
-
-	pr_info("listener thread exiting\n");
 	return 0;
 }
 
-static int __init klisp_init(void)
+/* ---- worker lifecycle (driven by the supervisor) ----------------------- */
+
+static void klisp_stop_worker(void)
 {
-	struct sockaddr_in addr = { };
-	int err;
-
-	if (in4_pton(bind_addr, -1, (u8 *)&addr.sin_addr.s_addr,
-		     -1, NULL) != 1) {
-		pr_err("invalid bind_addr '%s'\n", bind_addr);
-		return -EINVAL;
-	}
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-
-	err = sock_create_kern(&init_net, AF_INET, SOCK_STREAM, IPPROTO_TCP,
-			       &listen_sock);
-	if (err < 0) {
-		pr_err("sock_create_kern failed: %d\n", err);
-		return err;
-	}
-
-	sock_set_reuseaddr(listen_sock->sk);
-	listen_sock->sk->sk_rcvtimeo = msecs_to_jiffies(KLISP_POLL_MS);
-
-	err = kernel_bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr));
-	if (err < 0) {
-		pr_err("bind %s:%u failed: %d\n", bind_addr, port, err);
-		goto err_release;
-	}
-
-	err = kernel_listen(listen_sock, KLISP_BACKLOG);
-	if (err < 0) {
-		pr_err("listen failed: %d\n", err);
-		goto err_release;
-	}
-
-	listen_thread = kthread_run(klisp_listen_fn, NULL, "klispd");
-	if (IS_ERR(listen_thread)) {
-		err = PTR_ERR(listen_thread);
-		pr_err("kthread_run failed: %d\n", err);
-		listen_thread = NULL;
-		goto err_release;
-	}
-
-	pr_info("listening on %s:%u (SWANK + raw REPL)\n", bind_addr, port);
-	return 0;
-
-err_release:
-	sock_release(listen_sock);
-	listen_sock = NULL;
-	return err;
-}
-
-static void __exit klisp_exit(void)
-{
-	if (listen_thread) {
-		if (listen_sock)
-			kernel_sock_shutdown(listen_sock, SHUT_RDWR);
-		kthread_stop(listen_thread);
-		listen_thread = NULL;
+	if (listen_sock)
+		kernel_sock_shutdown(listen_sock, SHUT_RDWR);	/* wake accept */
+	if (worker) {
+		kthread_stop(worker);	/* safe even if it already returned */
+		worker = NULL;
 	}
 	if (listen_sock) {
 		sock_release(listen_sock);
 		listen_sock = NULL;
 	}
+}
+
+static int klisp_start_worker(void)
+{
+	struct sockaddr_in addr = { };
+	int err;
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	if (in4_pton(bind_addr, -1, (u8 *)&addr.sin_addr.s_addr, -1, NULL) != 1)
+		return -EINVAL;
+
+	err = sock_create_kern(&init_net, AF_INET, SOCK_STREAM, IPPROTO_TCP,
+			       &listen_sock);
+	if (err < 0)
+		return err;
+	sock_set_reuseaddr(listen_sock->sk);
+	listen_sock->sk->sk_rcvtimeo = msecs_to_jiffies(KLISP_POLL_MS);
+
+	err = kernel_bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr));
+	if (err < 0)
+		goto release;
+	err = kernel_listen(listen_sock, KLISP_BACKLOG);
+	if (err < 0)
+		goto release;
+
+	klisp_beat();
+	worker = kthread_run(klisp_worker_fn, NULL, "klispd");
+	if (IS_ERR(worker)) {
+		err = PTR_ERR(worker);
+		worker = NULL;
+		goto release;
+	}
+	worker_starts++;
+	return 0;
+
+release:
+	sock_release(listen_sock);
+	listen_sock = NULL;
+	return err;
+}
+
+/* ---- supervisor -------------------------------------------------------- */
+
+static int klisp_supervisor_fn(void *data)
+{
+	(void)data;
+	while (!kthread_should_stop()) {
+		if (klisp_stopping)
+			break;
+		/* Restart on request (debugfs reset / kill-worker). The worker is
+		 * always alive and cooperative here, so kthread_stop is safe.
+		 * (A genuine worker oops leaves a tainted kernel; the documented
+		 * backstop for that is rmmod/insmod — DESIGN §7.) */
+		if (atomic_xchg(&reset_req, 0)) {
+			pr_warn("restarting worker (requested)\n");
+			klisp_stop_worker();
+			if (klisp_start_worker() < 0)
+				pr_err("worker restart failed\n");
+		}
+		msleep(200);
+	}
+	return 0;
+}
+
+/* ---- debugfs control: /sys/kernel/debug/klisp/{status,reset,kill-worker} - */
+
+static struct dentry *klisp_dbg;
+
+static ssize_t status_read(struct file *f, char __user *ubuf, size_t len,
+			   loff_t *off)
+{
+	char buf[256];
+	int n;
+
+	n = scnprintf(buf, sizeof(buf),
+		      "bind:        %s:%u\n"
+		      "worker:      %s\n"
+		      "worker_starts: %u\n"
+		      "conns_total: %d\n"
+		      "heartbeat_age_ms: %u\n"
+		      "eval_timeout_s: %u\n",
+		      bind_addr, port,
+		      worker ? "alive" : "down",
+		      worker_starts, atomic_read(&conns_total),
+		      jiffies_to_msecs(jiffies - worker_beat),
+		      eval_timeout_s);
+	return simple_read_from_buffer(ubuf, len, off, buf, n);
+}
+
+static ssize_t reset_write(struct file *f, const char __user *ubuf, size_t len,
+			   loff_t *off)
+{
+	atomic_set(&reset_req, 1);
+	pr_info("reset requested via debugfs\n");
+	return len;
+}
+
+static ssize_t kill_write(struct file *f, const char __user *ubuf, size_t len,
+			  loff_t *off)
+{
+	atomic_set(&reset_req, 1);	/* supervisor stops + respawns the worker */
+	pr_info("worker kill requested via debugfs (diagnostic)\n");
+	return len;
+}
+
+static const struct file_operations status_fops = {
+	.owner = THIS_MODULE, .read = status_read,
+};
+static const struct file_operations reset_fops = {
+	.owner = THIS_MODULE, .write = reset_write,
+};
+static const struct file_operations kill_fops = {
+	.owner = THIS_MODULE, .write = kill_write,
+};
+
+static void klisp_debugfs_init(void)
+{
+	klisp_dbg = debugfs_create_dir("klisp", NULL);
+	if (IS_ERR_OR_NULL(klisp_dbg)) {	/* debugfs off — not fatal */
+		klisp_dbg = NULL;
+		return;
+	}
+	debugfs_create_file("status", 0444, klisp_dbg, NULL, &status_fops);
+	debugfs_create_file("reset", 0200, klisp_dbg, NULL, &reset_fops);
+	debugfs_create_file("kill-worker", 0200, klisp_dbg, NULL, &kill_fops);
+}
+
+/* ---- module init/exit -------------------------------------------------- */
+
+static int __init klisp_init(void)
+{
+	int err = klisp_start_worker();
+
+	if (err < 0) {
+		pr_err("failed to start worker: %d\n", err);
+		return err;
+	}
+
+	supervisor = kthread_run(klisp_supervisor_fn, NULL, "klisp-sup");
+	if (IS_ERR(supervisor)) {
+		err = PTR_ERR(supervisor);
+		supervisor = NULL;
+		klisp_stop_worker();
+		return err;
+	}
+
+	klisp_debugfs_init();
+	pr_info("listening on %s:%u (SWANK + raw REPL); supervisor up\n",
+		bind_addr, port);
+	return 0;
+}
+
+static void __exit klisp_exit(void)
+{
+	klisp_stopping = true;
+	debugfs_remove_recursive(klisp_dbg);
+	if (supervisor)
+		kthread_stop(supervisor);
+	klisp_stop_worker();
 	pr_info("unloaded\n");
 }
 
