@@ -516,6 +516,42 @@ static fe_Object *cf_getf(fe_Context *ctx, fe_Object *args)
 	return dflt;
 }
 
+/* (mapcar fn list): apply FN to each element, returning the list of results.
+ * FN is already an evaluated function value; we apply it by building and
+ * evaluating (fn (quote elem)) so the element isn't re-evaluated. */
+static fe_Object *cf_mapcar(fe_Context *ctx, fe_Object *args)
+{
+	fe_Object *fn = fe_nextarg(ctx, &args);
+	fe_Object *lst = fe_nextarg(ctx, &args);
+	fe_Object *quote = fe_symbol(ctx, "quote");
+	fe_Object *nil = fe_bool(ctx, 0);
+	fe_Object *acc = nil, *out = nil, *p;
+	int gc = fe_savegc(ctx);
+
+	/* apply fn to each element, accumulating results reversed */
+	while (fe_type(ctx, lst) == FE_TPAIR) {
+		fe_Object *elem, *call;
+
+		fe_restoregc(ctx, gc);
+		fe_pushgc(ctx, acc);
+		fe_pushgc(ctx, lst);
+		elem = fe_car(ctx, lst);
+		call = fe_cons(ctx, fn,
+			       fe_cons(ctx,
+				       fe_cons(ctx, quote, fe_cons(ctx, elem, nil)),
+				       nil));
+		acc = fe_cons(ctx, fe_eval(ctx, call), acc);
+		lst = fe_cdr(ctx, lst);
+	}
+	/* reverse acc into the natural order */
+	for (p = acc; fe_type(ctx, p) == FE_TPAIR; p = fe_cdr(ctx, p)) {
+		fe_pushgc(ctx, acc);
+		fe_pushgc(ctx, out);
+		out = fe_cons(ctx, fe_car(ctx, p), out);
+	}
+	return out;
+}
+
 static void klisp_register_kernel_builtins(fe_Context *ctx)
 {
 	int gc = fe_savegc(ctx);
@@ -529,6 +565,7 @@ static void klisp_register_kernel_builtins(fe_Context *ctx)
 		{ "length",         cf_length },
 		{ "nth",            cf_nth },
 		{ "getf",           cf_getf },
+		{ "mapcar",         cf_mapcar },
 	};
 	int i;
 

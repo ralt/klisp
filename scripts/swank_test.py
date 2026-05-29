@@ -56,6 +56,7 @@ CASES = [
     ("(list-netdevs)", "lo", "ok"),
     ("(uname)", "6.12", "ok"),
     ("(getf (uname) :release)", "6.12", "ok"),
+    ("(mapcar (fn (n) (+ n 1)) (list 1 2 3))", "(2 3 4)", "ok"),
 ]
 
 

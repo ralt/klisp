@@ -106,9 +106,10 @@ M-x slime-connect RET localhost RET 4005 RET
 
 # Or a raw REPL over netcat:
 nc localhost 4005     # then type: (+ 1 2)  or inspect the kernel:
-                      #   (car (list-processes))            =>  (:pid 1 :comm "init" ...)
-                      #   (getf (car (list-processes)) :pid)  =>  1     (pull a field)
-                      #   (list-netdevs)  (meminfo)  (uname)  (= sq (fn (n) (* n n)))  (sq 9)
+                      #   (car (list-processes))               =>  (:pid 1 :comm "init" ...)
+                      #   (getf (car (list-processes)) :pid)   =>  1     (pull a field)
+                      #   (mapcar (fn (p) (getf p :comm)) (list-processes))   (field over all)
+                      #   (print (uname))   (list-netdevs)  (meminfo)  (= sq (fn (n) (* n n)))
 ```
 
 In Emacs once connected:

@@ -85,6 +85,9 @@ CASES = [
     ("(getf (list :a 1) :missing)", "nil"),
     ("(getf (uname) :machine)", "x86_64"),
     ("(< 0 (getf (car (list-processes)) :pid))", "t"),
+    # mapcar (incl. applying a closure over kernel-object plists)
+    ("(mapcar (fn (n) (* n n)) (list 1 2 3))", "(1 4 9)"),
+    ("(mapcar (fn (d) (getf d :name)) (list-netdevs))", "lo"),
     # discovery
     ("(atom (functions))", "nil"),               # functions returns a list
     ("(functions)", "car"),                      # a primitive
