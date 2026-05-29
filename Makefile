@@ -63,9 +63,17 @@ KREL    := $(shell uname -r)
 MODDIR  := /lib/modules/$(KREL)/extra
 MODOPTS ?= bind_addr=127.0.0.1 port=4005
 
+# depmod/modprobe live in /usr/sbin or /sbin, which aren't always on $PATH under
+# `sudo make` (sudo's secure_path may omit sbin). Resolve them explicitly.
+SBINPATH := $(PATH):/usr/sbin:/sbin:/usr/local/sbin
+DEPMOD   := $(shell PATH="$(SBINPATH)" command -v depmod 2>/dev/null)
+MODPROBE := $(shell PATH="$(SBINPATH)" command -v modprobe 2>/dev/null)
+
 install:
 	@[ "$$(id -u)" = 0 ] || { echo "run as root: sudo make install"; exit 1; }
 	@[ -f klisp.ko ] || { echo "build it first (as your user): make"; exit 1; }
+	@[ -n "$(DEPMOD)" ] && [ -n "$(MODPROBE)" ] || { \
+		echo "depmod/modprobe not found — install the 'kmod' package"; exit 1; }
 	@if command -v mokutil >/dev/null 2>&1 && \
 	    mokutil --sb-state 2>/dev/null | grep -qi 'SecureBoot enabled'; then \
 		echo "WARNING: Secure Boot is enabled — this unsigned module will be"; \
@@ -73,18 +81,18 @@ install:
 	fi
 	install -d "$(MODDIR)"
 	install -m 0644 klisp.ko "$(MODDIR)/klisp.ko"
-	depmod -a "$(KREL)"
+	$(DEPMOD) -a "$(KREL)"
 	install -d /etc/modules-load.d /etc/modprobe.d
 	printf 'klisp\n' > /etc/modules-load.d/klisp.conf
 	printf 'options klisp %s\n' '$(MODOPTS)' > /etc/modprobe.d/klisp.conf
-	modprobe klisp
+	$(MODPROBE) klisp
 	@echo ">> installed; loaded with: $(MODOPTS)"
 	@echo ">> autoloads at boot (/etc/modules-load.d/klisp.conf)"
 	@echo ">> connect:  M-x slime-connect RET localhost RET 4005   or   nc localhost 4005"
 
 uninstall:
 	@[ "$$(id -u)" = 0 ] || { echo "run as root: sudo make uninstall"; exit 1; }
-	-modprobe -r klisp 2>/dev/null || rmmod klisp 2>/dev/null || true
+	-[ -n "$(MODPROBE)" ] && $(MODPROBE) -r klisp 2>/dev/null || rmmod klisp 2>/dev/null || true
 	rm -f "$(MODDIR)/klisp.ko" /etc/modules-load.d/klisp.conf /etc/modprobe.d/klisp.conf
-	depmod -a "$(KREL)"
+	-[ -n "$(DEPMOD)" ] && $(DEPMOD) -a "$(KREL)" || true
 	@echo ">> uninstalled."
