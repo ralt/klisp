@@ -52,8 +52,10 @@ CASES = [
     ("(+ 3 3)", "6", "ok"),
     # read-only kernel objects (live values, assert structure)
     ("(car (list-processes))", ":pid", "ok"),
+    ("(< 0 (getf (car (list-processes)) :pid))", "t", "ok"),  # field by key
     ("(list-netdevs)", "lo", "ok"),
     ("(uname)", "6.12", "ok"),
+    ("(getf (uname) :release)", "6.12", "ok"),
 ]
 
 

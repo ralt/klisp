@@ -493,6 +493,29 @@ static fe_Object *cf_nth(fe_Context *ctx, fe_Object *args)
 	return fe_car(ctx, l);
 }
 
+/* (getf plist key [default]): value following KEY in a (k v k v ...) plist, or
+ * DEFAULT (nil) if absent. Keys are matched by identity, which is what you want
+ * for the interned keyword symbols our snapshots use (e.g. :pid). */
+static fe_Object *cf_getf(fe_Context *ctx, fe_Object *args)
+{
+	fe_Object *lst = fe_nextarg(ctx, &args);
+	fe_Object *key = fe_nextarg(ctx, &args);
+	fe_Object *dflt = (fe_type(ctx, args) == FE_TPAIR)
+		? fe_nextarg(ctx, &args) : fe_bool(ctx, 0);
+
+	while (fe_type(ctx, lst) == FE_TPAIR) {
+		fe_Object *k = fe_car(ctx, lst);
+
+		lst = fe_cdr(ctx, lst);
+		if (fe_type(ctx, lst) != FE_TPAIR)
+			break;			/* dangling key, no value */
+		if (k == key)
+			return fe_car(ctx, lst);
+		lst = fe_cdr(ctx, lst);
+	}
+	return dflt;
+}
+
 static void klisp_register_kernel_builtins(fe_Context *ctx)
 {
 	int gc = fe_savegc(ctx);
@@ -505,6 +528,7 @@ static void klisp_register_kernel_builtins(fe_Context *ctx)
 		{ "functions",      cf_functions },
 		{ "length",         cf_length },
 		{ "nth",            cf_nth },
+		{ "getf",           cf_getf },
 	};
 	int i;
 

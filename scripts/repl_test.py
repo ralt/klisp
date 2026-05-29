@@ -80,6 +80,11 @@ CASES = [
     ("(length (list 1 2 3))", "3"),
     ("(nth 1 (list 10 20 30))", "20"),
     ("(< 0 (length (list-processes)))", "t"),    # at least one process
+    # getf on plists (literal, missing key, and real kernel-object snapshots)
+    ("(getf (list :a 1 :b 2) :b)", "2"),
+    ("(getf (list :a 1) :missing)", "nil"),
+    ("(getf (uname) :machine)", "x86_64"),
+    ("(< 0 (getf (car (list-processes)) :pid))", "t"),
     # discovery
     ("(atom (functions))", "nil"),               # functions returns a list
     ("(functions)", "car"),                      # a primitive

@@ -295,6 +295,9 @@ fe_Object* fe_symbol(fe_Context *ctx, const char *name) {
   settype(obj, FE_TSYMBOL);
   cdr(obj) = fe_cons(ctx, fe_string(ctx, name), &nil);
   ctx->symlist = fe_cons(ctx, obj, ctx->symlist);
+  /* klisp: keywords (:foo) self-evaluate, like Common Lisp, so they can be used
+   * directly as plist keys (e.g. (getf p :pid)) without quoting. */
+  if (name[0] == ':') { fe_set(ctx, obj, obj); }
   return obj;
 }
 
