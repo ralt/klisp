@@ -14,6 +14,8 @@ docker build --build-arg "KVER=${KVER}" \
 
 echo ">> compiling module"
 # Run as the host user so build artifacts (klisp.ko, *.o) aren't root-owned.
+# `clean all` uses our targeted clean (Makefile) — never kbuild's recursive
+# clean, which would delete fetched *.ko under .devkernel/.
 docker run --rm -u "$(id -u):$(id -g)" -v "${ROOT}:/work" -w /work "${IMG}" \
 	make KVER="${KVER}" clean all
 

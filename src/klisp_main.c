@@ -2,12 +2,13 @@
 /*
  * klisp — a Lisp machine inside the Linux kernel.
  *
- * Milestone M1: prove the dangerous plumbing. This module stands up a TCP
- * listener in a kthread and echoes whatever a client sends. No Lisp yet — the
- * point is a working, cleanly-unloadable kernel socket server we can build the
- * SWANK/REPL layers on top of (see DESIGN.md §3, §9).
+ * Milestone M2: a Lisp REPL over TCP. A kthread accepts a connection and runs
+ * a read-eval-print loop driven by the vendored `fe` interpreter (see
+ * vendor/fe, DESIGN.md §4-5). Errors (bad input, unbound symbols, divide by
+ * zero, runaway recursion) are caught and returned to the client; they must
+ * never crash the kernel.
  *
- * Connect from the host with:  nc localhost 4005
+ * Connect from the host with:  nc localhost 4005   then type e.g.  (+ 1 2)
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -18,6 +19,7 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 #include <linux/in.h>
 #include <linux/inet.h>
 #include <linux/net.h>
@@ -25,22 +27,16 @@
 #include <linux/uio.h>
 #include <net/sock.h>
 
+#include "fe.h"
+
 #define KLISP_BACKLOG	8
-#define KLISP_BUFSZ	1024
-/* Poll granularity so blocking accept()/recvmsg() periodically return and we
- * can observe kthread_should_stop() during module unload. */
 #define KLISP_POLL_MS	500
+#define KLISP_FE_HEAP	(256 * 1024)	/* fe object arena, per connection */
 
 static ushort port = 4005;
 module_param(port, ushort, 0444);
 MODULE_PARM_DESC(port, "TCP port to listen on (default 4005)");
 
-/*
- * Default to loopback: an in-kernel echo/eval endpoint must not be exposed on
- * the network (DESIGN.md §8 "Deployment target"). QEMU dev passes
- * bind_addr=0.0.0.0 because SLIRP host-forwarding lands on the guest's NIC
- * address, not 127.0.0.1.
- */
 static char *bind_addr = "127.0.0.1";
 module_param(bind_addr, charp, 0444);
 MODULE_PARM_DESC(bind_addr, "IPv4 address to bind (default 127.0.0.1)");
@@ -48,48 +44,203 @@ MODULE_PARM_DESC(bind_addr, "IPv4 address to bind (default 127.0.0.1)");
 static struct socket *listen_sock;
 static struct task_struct *listen_thread;
 
-/* Echo everything from one connected client until it disconnects or we unload. */
-static void klisp_echo_conn(struct socket *sock)
+/* Per-connection REPL I/O state. Serves one connection at a time (the listener
+ * handles connections inline), so a single global pointer suffices for the
+ * callbacks fe invokes without a udata channel (error/print). */
+struct repl_io {
+	struct socket *sock;
+	klisp_jmp_buf errjmp;	/* REPL top-level, jumped to on error */
+	char rbuf[512];
+	int rlen, rpos;
+	bool eof;
+	char wbuf[1024];
+	int wlen;
+};
+
+static struct repl_io *g_io;
+
+/* ---- socket I/O -------------------------------------------------------- */
+
+static void repl_flush(struct repl_io *io)
 {
-	char *buf;
+	int off = 0;
 
-	buf = kmalloc(KLISP_BUFSZ, GFP_KERNEL);
-	if (!buf)
-		return;
-
-	/* Time out recvmsg so the loop can notice kthread_should_stop(). */
-	sock->sk->sk_rcvtimeo = msecs_to_jiffies(KLISP_POLL_MS);
-
-	while (!kthread_should_stop()) {
+	while (off < io->wlen && !kthread_should_stop()) {
 		struct msghdr msg = { };
-		struct kvec vec = { .iov_base = buf, .iov_len = KLISP_BUFSZ };
-		int n, off;
+		struct kvec vec = {
+			.iov_base = io->wbuf + off,
+			.iov_len = io->wlen - off,
+		};
+		int s = kernel_sendmsg(io->sock, &msg, &vec, 1, io->wlen - off);
 
-		n = kernel_recvmsg(sock, &msg, &vec, 1, KLISP_BUFSZ, 0);
+		if (s == -EAGAIN || s == -EWOULDBLOCK || s == -ERESTARTSYS)
+			continue;
+		if (s <= 0)
+			break;
+		off += s;
+	}
+	io->wlen = 0;
+}
+
+static void repl_putc(struct repl_io *io, char c)
+{
+	if (io->wlen >= (int)sizeof(io->wbuf))
+		repl_flush(io);
+	io->wbuf[io->wlen++] = c;
+}
+
+static void repl_puts(struct repl_io *io, const char *s)
+{
+	while (*s)
+		repl_putc(io, *s++);
+}
+
+/* fe_ReadFn: hand fe one character at a time, refilling from the socket and
+ * blocking (with a timeout so unload can interrupt) when the buffer drains. */
+static char repl_readfn(fe_Context *ctx, void *udata)
+{
+	struct repl_io *io = udata;
+
+	(void)ctx;
+	while (io->rpos >= io->rlen) {
+		struct msghdr msg = { };
+		struct kvec vec = {
+			.iov_base = io->rbuf,
+			.iov_len = sizeof(io->rbuf),
+		};
+		int n;
+
+		if (kthread_should_stop()) {
+			io->eof = true;
+			return '\0';
+		}
+		n = kernel_recvmsg(io->sock, &msg, &vec, 1, sizeof(io->rbuf), 0);
 		if (n == -EAGAIN || n == -EWOULDBLOCK || n == -ERESTARTSYS)
 			continue;
-		if (n <= 0)	/* 0 = orderly close, <0 = error */
-			break;
-
-		for (off = 0; off < n && !kthread_should_stop(); ) {
-			struct msghdr smsg = { };
-			struct kvec svec = {
-				.iov_base = buf + off,
-				.iov_len = n - off,
-			};
-			int s = kernel_sendmsg(sock, &smsg, &svec, 1, n - off);
-
-			if (s == -EAGAIN || s == -EWOULDBLOCK ||
-			    s == -ERESTARTSYS)
-				continue;
-			if (s <= 0)
-				goto out;
-			off += s;
+		if (n <= 0) {
+			io->eof = true;
+			return '\0';
 		}
+		io->rlen = n;
+		io->rpos = 0;
 	}
-out:
-	kfree(buf);
+	return io->rbuf[io->rpos++];
 }
+
+/* ---- callbacks fe needs (declared in vendor/fe/fe_port.h) -------------- */
+
+/* fe_WriteFn used for (print ...) and for printing eval results. */
+void klisp_write_char(fe_Context *ctx, void *udata, char chr)
+{
+	(void)ctx;
+	(void)udata;
+	if (g_io)
+		repl_putc(g_io, chr);
+}
+
+void klisp_emergency_longjmp(void)
+{
+	if (g_io)
+		__builtin_longjmp(g_io->errjmp, 1);
+	pr_err("fe error with no active REPL context\n");
+}
+
+/* Integer strtod replacement (base 10, optional sign). On no digits, *end == s
+ * so fe treats the token as a symbol (e.g. the primitives +, -, *, /). */
+long klisp_strtod(const char *s, char **end)
+{
+	const char *p = s;
+	int neg = 0, got = 0;
+	long v = 0;
+
+	if (*p == '+' || *p == '-') {
+		neg = (*p == '-');
+		p++;
+	}
+	while (*p >= '0' && *p <= '9') {
+		v = v * 10 + (*p - '0');
+		p++;
+		got = 1;
+	}
+	if (!got) {
+		*end = (char *)s;
+		return 0;
+	}
+	*end = (char *)p;
+	return neg ? -v : v;
+}
+
+/* fe error handler: report to the client and unwind to the REPL top level. */
+static void repl_onerror(fe_Context *ctx, const char *msg, fe_Object *cl)
+{
+	(void)ctx;
+	(void)cl;
+	if (g_io) {
+		repl_puts(g_io, "error: ");
+		repl_puts(g_io, msg);
+		repl_putc(g_io, '\n');
+		repl_flush(g_io);
+		__builtin_longjmp(g_io->errjmp, 1);
+	}
+}
+
+/* ---- the REPL ---------------------------------------------------------- */
+
+static void klisp_repl_conn(struct socket *sock)
+{
+	struct repl_io *io;
+	void *heap;
+	fe_Context *ctx;
+	int gc;
+
+	io = kzalloc(sizeof(*io), GFP_KERNEL);
+	if (!io)
+		return;
+	heap = vmalloc(KLISP_FE_HEAP);
+	if (!heap) {
+		kfree(io);
+		return;
+	}
+
+	io->sock = sock;
+	sock->sk->sk_rcvtimeo = msecs_to_jiffies(KLISP_POLL_MS);
+	ctx = fe_open(heap, KLISP_FE_HEAP);
+	fe_handlers(ctx)->error = repl_onerror;
+	g_io = io;
+
+	repl_puts(io, "klisp Lisp REPL — try (+ 1 2), (= x 10), (* x x); errors recover\n> ");
+	repl_flush(io);
+
+	gc = fe_savegc(ctx);
+	if (__builtin_setjmp(io->errjmp)) {
+		/* arrived here after an error; reset and re-prompt */
+		fe_restoregc(ctx, gc);
+		repl_puts(io, "> ");
+		repl_flush(io);
+	}
+
+	for (;;) {
+		fe_Object *obj;
+
+		fe_restoregc(ctx, gc);
+		if (kthread_should_stop() || io->eof)
+			break;
+		obj = fe_read(ctx, repl_readfn, io);
+		if (!obj)
+			break;	/* EOF / disconnect */
+		obj = fe_eval(ctx, obj);
+		fe_write(ctx, obj, klisp_write_char, NULL, 0);
+		repl_puts(io, "\n> ");
+		repl_flush(io);
+	}
+
+	g_io = NULL;
+	fe_close(ctx);
+	vfree(heap);
+	kfree(io);
+}
+
+/* ---- listener ---------------------------------------------------------- */
 
 static int klisp_listen_fn(void *data)
 {
@@ -103,14 +254,13 @@ static int klisp_listen_fn(void *data)
 		    err == -ERESTARTSYS)
 			continue;
 		if (err < 0) {
-			/* Listen socket was shut down (unload) or transient. */
 			if (kthread_should_stop())
 				break;
 			msleep(KLISP_POLL_MS);
 			continue;
 		}
 
-		klisp_echo_conn(client);
+		klisp_repl_conn(client);
 		sock_release(client);
 	}
 
@@ -139,7 +289,6 @@ static int __init klisp_init(void)
 	}
 
 	sock_set_reuseaddr(listen_sock->sk);
-	/* Bound accept() latency so unload doesn't hang up to forever. */
 	listen_sock->sk->sk_rcvtimeo = msecs_to_jiffies(KLISP_POLL_MS);
 
 	err = kernel_bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr));
@@ -162,7 +311,7 @@ static int __init klisp_init(void)
 		goto err_release;
 	}
 
-	pr_info("listening on %s:%u (echo)\n", bind_addr, port);
+	pr_info("listening on %s:%u (Lisp REPL)\n", bind_addr, port);
 	return 0;
 
 err_release:
@@ -174,8 +323,6 @@ err_release:
 static void __exit klisp_exit(void)
 {
 	if (listen_thread) {
-		/* Interrupt a blocked accept(), then join the thread before
-		 * tearing down the socket it was using. */
 		if (listen_sock)
 			kernel_sock_shutdown(listen_sock, SHUT_RDWR);
 		kthread_stop(listen_thread);
@@ -195,5 +342,5 @@ module_exit(klisp_exit);
  * access to GPL-only exported symbols without adding a license taint. */
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("klisp");
-MODULE_DESCRIPTION("A Lisp machine inside the Linux kernel (M1: TCP echo)");
-MODULE_VERSION("0.0.1-m1");
+MODULE_DESCRIPTION("A Lisp machine inside the Linux kernel (M2: Lisp REPL)");
+MODULE_VERSION("0.0.2-m2");

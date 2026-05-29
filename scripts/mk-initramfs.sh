@@ -45,8 +45,8 @@ if grep -qw klisp_selftest /proc/cmdline; then
 fi
 
 echo
-echo "=== klisp M1: TCP echo on :${PORT}  (host: nc localhost ${PORT}) ==="
-echo "=== rmmod klisp / insmod to test reload   |   Ctrl-A X to quit qemu ==="
+echo "=== klisp on tcp :${PORT}  (host: nc localhost ${PORT}) ==="
+echo "=== rmmod klisp / insmod to reload   |   Ctrl-A X to quit qemu ==="
 echo
 
 /bin/busybox sh

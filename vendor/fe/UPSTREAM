@@ -1,0 +1,8 @@
+Upstream: https://github.com/rxi/fe
+Commit:   ed4cda96bd582cbb08520964ba627efb40f3dd91
+Files:    src/fe.c, src/fe.h, LICENSE  (License: MIT)
+
+Vendored verbatim, then patched for in-kernel use (no libc, integer-only,
+__builtin_setjmp instead of setjmp/longjmp). Klisp-local changes are marked
+with /* klisp: ... */ comments. To re-sync: re-fetch the files above at a newer
+commit and re-apply those marked changes.

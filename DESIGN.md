@@ -406,11 +406,20 @@ places — only the build's target kernel headers differ.
 1. **M1 — Plumbing. ✓ DONE.** Module skeleton + TCP echo `kthread` in QEMU;
    connect with `nc` from host. *Proved the dangerous part: kernel sockets +
    threads, and clean rmmod/reload teardown.*
-2. **M2 — Integrate `fe` + condition system.** Vendor `fe`, make it build
-   in-kernel (numbers→`long`, strip libc, GC buffer from `kmalloc`/`vmalloc`),
-   wire its I/O callbacks to the socket, and replace its `setjmp` error path
-   with our non-local-exit condition machinery (so a bad form returns an error,
-   never crashes). Result: a raw Lisp REPL over the socket.
+2. **M2 — Integrate `fe` + condition system. ✓ DONE.** Vendored `fe`, ported
+   it in-kernel (numbers→`long`, libc→kernel, `setjmp`→`__builtin_setjmp`, GC
+   buffer from `vmalloc`), wired its I/O callbacks to the socket. Errors unwind
+   to the REPL top level via `__builtin_longjmp` and are reported to the client.
+   Added kernel-safety guards: integer divide-by-zero check, and a stack-depth
+   guard (the recursive evaluator would otherwise overflow the ~16 KB kernel
+   stack). *Verified in QEMU:* arithmetic/vars/`fn`/list ops evaluate; div0,
+   type errors, unclosed lists, and infinite recursion all report an error and
+   the REPL recovers; clean `rmmod`/reload, no Oops/panic.
+   - Gotcha found & fixed: `CONFIG_FORTIFY_SOURCE` BUG()s on `fe`'s in-object
+     string storage → build with `-D__NO_FORTIFY`.
+   - Gotcha found & fixed: kbuild's `M=$(PWD) clean` runs `find -name '*.ko*'
+     -delete` over the tree, wiping fetched artifacts under `.devkernel/` → our
+     Makefile uses a targeted `clean` instead.
 3. **M3 — Minimal SWANK REPL.** The ~7 REPL handlers + framing → real
    `M-x slime-connect` working REPL.
 4. **M4 — Read-only kernel objects.** `(list-processes)`, `(list-modules)`,
