@@ -72,6 +72,14 @@ Prerequisites: Docker (you can run `docker`), `qemu-system-x86_64`, a Debian/
 read/write on `/dev/kvm` for speed.
 
 ```sh
+scripts/play.sh           # build (if needed), boot the VM, and print how to connect
+```
+
+`play.sh` is the easy path — it ensures everything is built, boots klisp in
+QEMU, and prints the address to connect to (`localhost:4005`). Set `PORT=NNNN`
+to use a different host port. The individual steps are also available:
+
+```sh
 scripts/build.sh          # build klisp.ko in a container matching your kernel
 scripts/fetch-image.sh    # one-time: fetch a bootable vmlinuz + NIC + busybox (~108MB)
 scripts/mk-initramfs.sh   # build the initramfs that loads the module
@@ -102,6 +110,9 @@ failing if any case is wrong or the kernel Oopses:
   predicates, control flow, lists, functions/recursion, error recovery).
 - `scripts/swank_test.py` — the SWANK wire protocol the way SLIME speaks it
   (handshake + `listener-eval` over the same primitives, `:abort` on errors).
+- `scripts/emacs_slime_test.el` — a **real Emacs + SLIME** client (run in batch)
+  that `slime-connect`s and evaluates, exercising the actual client path. Run
+  automatically when `emacs` and SLIME are installed, skipped otherwise.
 
 Run it before adding new primitives or abstractions:
 

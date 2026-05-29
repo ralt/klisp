@@ -52,6 +52,15 @@ python3 "${ROOT}/scripts/repl_test.py" localhost "${PORT}" || rc=$?
 echo "-- SWANK protocol integration --"
 python3 "${ROOT}/scripts/swank_test.py" localhost "${PORT}" || rc=$?
 
+if command -v emacs >/dev/null 2>&1 && \
+   ls -d "${HOME}"/.emacs.d/elpa/slime-* >/dev/null 2>&1; then
+	echo "-- real Emacs + SLIME client --"
+	KLISP_PORT="${PORT}" emacs --batch -l "${ROOT}/scripts/emacs_slime_test.el" \
+		2>/dev/null || rc=$?
+else
+	echo "-- real Emacs + SLIME client: SKIPPED (emacs or slime not found) --"
+fi
+
 # A passing test suite is meaningless if the kernel oopsed underneath it.
 if grep -qE "Oops|kernel BUG|Kernel panic|Call Trace" "${SERIAL}"; then
 	echo "!! kernel fault detected during tests:"

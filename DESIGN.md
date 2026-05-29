@@ -440,11 +440,13 @@ places — only the build's target kernel headers differ.
    Operator dispatch matches on a substring of the name so it works across
    SLIME's `swank:`/`swank-repl:` packages. The connection **auto-detects**
    protocol (SLIME sends a length-prefixed message immediately; a human at `nc`
-   does not), so one port serves both SWANK and the raw REPL. *Verified* by a
-   Python SWANK client (`scripts/swank_test.py`, 24 cases) in QEMU.
-   - Caveat: verified against our own protocol-faithful client, **not** yet a
-     live Emacs/SLIME session — real-SLIME nuances (exact handshake/version)
-     may still need a tweak; check with `M-x slime-connect`.
+   does not), so one port serves both SWANK and the raw REPL. *Verified* two
+   ways in QEMU: a Python SWANK client (`scripts/swank_test.py`, 24 cases) and
+   a **real Emacs + SLIME** client driven in batch
+   (`scripts/emacs_slime_test.el`) — it connects ("Connected. Let the hacking
+   commence!"), evaluates, and recovers from errors.
+   - To play interactively: `scripts/play.sh` boots the VM and prints the
+     address (`localhost:4005`) to `slime-connect`/`nc` to.
 4. **M4 — Read-only kernel objects.** `(list-processes)`, `(list-modules)`,
    `(list-netdevs)` returning snapshot plists; printer shows `#<proc ...>`.
 5. **M5 — Inspector.** Inspector handlers + per-type `inspect` parts +

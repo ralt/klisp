@@ -5,7 +5,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/.devkernel"
-PORT="${PORT:-4005}"
+# Host port to connect to; guest module listens on 4005 (forwarded below).
+HOSTPORT="${PORT:-4005}"
 
 [ -f "$OUT/vmlinuz" ]       || { echo "run scripts/fetch-image.sh first"; exit 1; }
 [ -f "$OUT/initramfs.gz" ]  || { echo "run scripts/mk-initramfs.sh first"; exit 1; }
@@ -21,5 +22,5 @@ exec qemu-system-x86_64 \
 	-initrd "$OUT/initramfs.gz" \
 	-append "console=ttyS0 rdinit=/init panic=-1" \
 	-m 512 -nographic -no-reboot \
-	-netdev "user,id=n0,hostfwd=tcp::${PORT}-:${PORT}" \
+	-netdev "user,id=n0,hostfwd=tcp::${HOSTPORT}-:4005" \
 	-device "e1000,netdev=n0"
