@@ -47,7 +47,10 @@ for _ in $(seq 1 120); do
 done
 
 rc=0
+echo "-- raw REPL primitives --"
 python3 "${ROOT}/scripts/repl_test.py" localhost "${PORT}" || rc=$?
+echo "-- SWANK protocol integration --"
+python3 "${ROOT}/scripts/swank_test.py" localhost "${PORT}" || rc=$?
 
 # A passing test suite is meaningless if the kernel oopsed underneath it.
 if grep -qE "Oops|kernel BUG|Kernel panic|Call Trace" "${SERIAL}"; then

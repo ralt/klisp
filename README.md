@@ -58,13 +58,14 @@ machine); running on the real host kernel is the eventual release goal.
 
 Early. Built in milestones:
 
-- **M1 — done.** A TCP echo server in a kernel module, built in Docker and
-  verified in QEMU (clean `rmmod`/reload, no panics). This is the socket+thread
-  foundation; there is no Lisp in it yet.
-- **M2+ — upcoming.** Vendor and port `fe`, then the SWANK REPL, read-only
-  kernel objects, and the inspector. See `DESIGN.md` §9 for the roadmap.
+- **M1 — done.** TCP server in a kernel module (kthread + sockets).
+- **M2 — done.** Embedded `fe` Lisp interpreter as a raw line REPL.
+- **M3 — done.** Minimal SWANK server so Emacs/SLIME can connect; same port
+  also serves the raw REPL (protocol auto-detected).
+- **Upcoming.** Read-only kernel objects (`list-processes`, …) and the SLIME
+  inspector. See `DESIGN.md` §9 for the roadmap.
 
-## Quickstart (M1: build → boot → echo)
+## Quickstart (build → boot → connect)
 
 Prerequisites: Docker (you can run `docker`), `qemu-system-x86_64`, a Debian/
 `apt` host (scripts use `apt-get download`, no root needed), and ideally
@@ -77,29 +78,35 @@ scripts/mk-initramfs.sh   # build the initramfs that loads the module
 scripts/run-qemu.sh       # boot it (quit QEMU with Ctrl-A then X)
 ```
 
-From another terminal, talk to the in-kernel server through the forwarded port:
+Then connect, either way (same port; the protocol is auto-detected):
 
 ```sh
-printf 'hello\n' | nc localhost 4005     # echoes 'hello' back
+# From Emacs:
+M-x slime-connect RET localhost RET 4005 RET
+
+# Or a raw REPL over netcat:
+nc localhost 4005     # then type: (+ 1 2)  (= sq (fn (n) (* n n)))  (sq 9)
 ```
 
 Inside the VM you can `rmmod klisp` / `insmod /klisp.ko bind_addr=0.0.0.0` to
 test reload, or boot with the `klisp_selftest` kernel cmdline token to run an
 automated rmmod/reload self-test.
 
-Once the SWANK server lands (M3), connecting will be
-`M-x slime-connect RET localhost RET 4005 RET`.
-
 ## Testing
 
 `scripts/test.sh` is the end-to-end regression suite: it builds the module in
-Docker, boots it in QEMU, drives the REPL over TCP, and asserts the results of
-~40 expressions (arithmetic, predicates, control flow, lists, functions and
-recursion, and error recovery), failing if any case is wrong or the kernel
-Oopses. Run it before adding new primitives or abstractions:
+Docker, boots it in QEMU, and runs two TCP drivers against the live module,
+failing if any case is wrong or the kernel Oopses:
+
+- `scripts/repl_test.py` — raw REPL, ~40 primitive assertions (arithmetic,
+  predicates, control flow, lists, functions/recursion, error recovery).
+- `scripts/swank_test.py` — the SWANK wire protocol the way SLIME speaks it
+  (handshake + `listener-eval` over the same primitives, `:abort` on errors).
+
+Run it before adding new primitives or abstractions:
 
 ```sh
-scripts/test.sh          # prints per-case ok/FAIL, then PASS/FAIL; exit code reflects it
+scripts/test.sh          # per-case ok/FAIL, then PASS/FAIL; exit code reflects it
 ```
 
 The cases live in `scripts/repl_test.py`; add to `CASES` as the language grows.

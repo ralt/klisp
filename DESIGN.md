@@ -432,8 +432,19 @@ places — only the build's target kernel headers differ.
    plus a check that the kernel didn't Oops/panic underneath. This caught the
    stack-overflow bug above, which manual testing had missed (it only triggers
    when an interrupt lands during the deep send). Run before adding abstractions.
-3. **M3 — Minimal SWANK REPL.** The ~7 REPL handlers + framing → real
-   `M-x slime-connect` working REPL.
+3. **M3 — Minimal SWANK REPL. ✓ DONE.** SWANK wire framing (6-hex length +
+   sexp), `:emacs-rex` dispatch, and handlers for `connection-info`,
+   `create-repl`, `listener-eval` (streams `(print)` output as `:write-string`,
+   the result as a `:repl-result`, errors as `:return (:abort …)`),
+   `interactive-eval`, and a lenient stub for the rest (require/autodoc/arglist).
+   Operator dispatch matches on a substring of the name so it works across
+   SLIME's `swank:`/`swank-repl:` packages. The connection **auto-detects**
+   protocol (SLIME sends a length-prefixed message immediately; a human at `nc`
+   does not), so one port serves both SWANK and the raw REPL. *Verified* by a
+   Python SWANK client (`scripts/swank_test.py`, 24 cases) in QEMU.
+   - Caveat: verified against our own protocol-faithful client, **not** yet a
+     live Emacs/SLIME session — real-SLIME nuances (exact handshake/version)
+     may still need a tweak; check with `M-x slime-connect`.
 4. **M4 — Read-only kernel objects.** `(list-processes)`, `(list-modules)`,
    `(list-netdevs)` returning snapshot plists; printer shows `#<proc ...>`.
 5. **M5 — Inspector.** Inspector handlers + per-type `inspect` parts +
